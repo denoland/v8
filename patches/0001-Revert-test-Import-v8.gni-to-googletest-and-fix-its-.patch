@@ -1,0 +1,59 @@
+From 2afd79e25f67c3526211291526bfbb3125c3ae16 Mon Sep 17 00:00:00 2001
+From: Ryan Dahl <ry@tinyclouds.org>
+Date: Thu, 10 Jun 2021 09:05:57 -0400
+Subject: [PATCH] Revert "[test] Import v8.gni to googletest and fix its
+ visibility"
+
+This reverts commit 7f9d7f0e40c57a15a4c052f92321f1508cd7d917.
+---
+ third_party/googletest/BUILD.gn | 20 --------------------
+ 1 file changed, 20 deletions(-)
+
+diff --git a/third_party/googletest/BUILD.gn b/third_party/googletest/BUILD.gn
+index 4d393efd95..4dd83f9b63 100644
+--- a/third_party/googletest/BUILD.gn
++++ b/third_party/googletest/BUILD.gn
+@@ -2,8 +2,6 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+-import("../../gni/v8.gni")
+-
+ config("gtest_config") {
+   visibility = [ ":*" ]  # gmock also shares this config.
+ 
+@@ -89,15 +87,6 @@ source_set("gtest") {
+   configs -= [ "//build/config/compiler:chromium_code" ]
+   configs += [ "//build/config/compiler:no_chromium_code" ]
+ 
+-  # V8-only workaround for http://crbug.com/chromium/1191946. Ensures that
+-  # googletest is compiled with the same visibility such as the rest of V8, see
+-  # https://source.chromium.org/chromium/chromium/src/+/master:v8/gni/v8.gni
+-  if ((is_posix || is_fuchsia) &&
+-      (v8_enable_backtrace || v8_monolithic || v8_expose_symbols)) {
+-    configs -= [ "//build/config/gcc:symbol_visibility_hidden" ]
+-    configs += [ "//build/config/gcc:symbol_visibility_default" ]
+-  }
+-
+   deps = []
+ 
+   if (is_fuchsia) {
+@@ -142,15 +131,6 @@ source_set("gmock") {
+     "src/googlemock/src/gmock.cc",
+   ]
+ 
+-  # V8-only workaround for http://crbug.com/chromium/1191946. Ensures that
+-  # googletest is compiled with the same visibility such as the rest of V8, see
+-  # https://source.chromium.org/chromium/chromium/src/+/master:v8/gni/v8.gni
+-  if ((is_posix || is_fuchsia) &&
+-      (v8_enable_backtrace || v8_monolithic || v8_expose_symbols)) {
+-    configs -= [ "//build/config/gcc:symbol_visibility_hidden" ]
+-    configs += [ "//build/config/gcc:symbol_visibility_default" ]
+-  }
+-
+   public_configs = [
+     ":gmock_config",
+     ":gtest_config",
+-- 
+2.25.1
+
