@@ -98,7 +98,7 @@ for (const version of V8_VERSIONS) {
     `origin/${UPSTREAM_LKGR}`,
   ]);
 
-  const versionDotH = await resp.text();
+  const versionDotH = await Deno.readTextFile("./v8/include/v8-version.h");
   const upstreamVersion = extractVersion(versionDotH);
 
   // If the upstream version does not match the current version, then we need to
