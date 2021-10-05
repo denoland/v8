@@ -15,10 +15,15 @@ maintains branches in the format `$V8_VERSION-lkgr-denoland` for the last few V8
 releases. These branches are a mirror of the upstream `$V8_VERSION-lkgr`
 branches, except with the patches from the `patches/` directory applied.
 
-Currently the following V8 branches are provided:
+Currently the following V8 branches are actively updated:
+
+- `9.4-lkgr-denoland`
+- `9.5-lkgr-denoland`
+
+Old V8 branches are also still available:
 
 - `9.3-lkgr-denoland`
-- `9.4-lkgr-denoland`
+- `9.2-lkgr-denoland`
 
 ## Contributing
 
