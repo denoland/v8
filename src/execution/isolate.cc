@@ -3180,6 +3180,10 @@ v8::PageAllocator* Isolate::page_allocator() const {
   return isolate_allocator_->page_allocator();
 }
 
+#if defined(V8_OS_WIN64)
+base::LazyMutex init_unwind_info_mutex_ = LAZY_MUTEX_INITIALIZER;
+#endif  // V8_OS_WIN64
+
 Isolate::Isolate(std::unique_ptr<i::IsolateAllocator> isolate_allocator,
                  bool is_shared)
     : isolate_data_(this, isolate_allocator->GetPtrComprCageBase()),
@@ -3308,11 +3312,13 @@ void Isolate::Deinit() {
 
 #if defined(V8_OS_WIN64)
   if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange() &&
-      heap()->memory_allocator() && RequiresCodeRange() &&
-      heap()->code_range()->AtomicDecrementUnwindInfoUseCount() == 1) {
-    const base::AddressRegion& code_region = heap()->code_region();
-    void* start = reinterpret_cast<void*>(code_region.begin());
-    win64_unwindinfo::UnregisterNonABICompliantCodeRange(start);
+      heap()->memory_allocator() && RequiresCodeRange()) {
+    base::MutexGuard guard(init_unwind_info_mutex_.Pointer());
+    if (heap()->code_range()->AtomicDecrementUnwindInfoUseCount() == 1) {
+      const base::AddressRegion& code_region = heap()->code_region();
+      void* start = reinterpret_cast<void*>(code_region.begin());
+      win64_unwindinfo::UnregisterNonABICompliantCodeRange(start);
+    }
   }
 #endif  // V8_OS_WIN64
 
@@ -4115,12 +4121,14 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
   }
 
 #if defined(V8_OS_WIN64)
-  if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange() &&
-      heap()->code_range()->AtomicIncrementUnwindInfoUseCount() == 0) {
-    const base::AddressRegion& code_region = heap()->code_region();
-    void* start = reinterpret_cast<void*>(code_region.begin());
-    size_t size_in_bytes = code_region.size();
-    win64_unwindinfo::RegisterNonABICompliantCodeRange(start, size_in_bytes);
+  if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange()) {
+    base::MutexGuard guard(init_unwind_info_mutex_.Pointer());
+    if (heap()->code_range()->AtomicIncrementUnwindInfoUseCount() == 0) {
+      const base::AddressRegion& code_region = heap()->code_region();
+      void* start = reinterpret_cast<void*>(code_region.begin());
+      size_t size_in_bytes = code_region.size();
+      win64_unwindinfo::RegisterNonABICompliantCodeRange(start, size_in_bytes);
+    }
   }
 #endif  // V8_OS_WIN64
 
