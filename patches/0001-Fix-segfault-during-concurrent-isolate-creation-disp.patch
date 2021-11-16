@@ -1,0 +1,73 @@
+From 254300abae18f2655441e98248187cb70c0cd70e Mon Sep 17 00:00:00 2001
+From: Bert Belder <bertbelder@gmail.com>
+Date: Mon, 15 Nov 2021 15:27:34 -0800
+Subject: [PATCH 1/1] Fix segfault during concurrent isolate creation/disposal
+ on Windows
+
+This patch is intentionally left simple to avoid merge conflicts in the
+future. To be landed upstream, the `unwindinfo_use_count_` would
+probably have to be made non-atomic and we'd have to add a cctest.
+
+Upstream bug: https://bugs.chromium.org/p/v8/issues/detail?id=12393
+---
+ src/execution/isolate.cc | 30 +++++++++++++++++++-----------
+ 1 file changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/src/execution/isolate.cc b/src/execution/isolate.cc
+index de396e8732..cc032b18ad 100644
+--- a/src/execution/isolate.cc
++++ b/src/execution/isolate.cc
+@@ -3016,6 +3016,10 @@ v8::PageAllocator* Isolate::page_allocator() const {
+   return isolate_allocator_->page_allocator();
+ }
+ 
++#if defined(V8_OS_WIN64)
++base::LazyMutex init_unwind_info_mutex_ = LAZY_MUTEX_INITIALIZER;
++#endif  // V8_OS_WIN64
++
+ Isolate::Isolate(std::unique_ptr<i::IsolateAllocator> isolate_allocator,
+                  bool is_shared)
+     : isolate_data_(this, isolate_allocator->GetPtrComprCageBase()),
+@@ -3140,11 +3144,13 @@ void Isolate::Deinit() {
+ 
+ #if defined(V8_OS_WIN64)
+   if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange() &&
+-      heap()->memory_allocator() && RequiresCodeRange() &&
+-      heap()->code_range()->AtomicDecrementUnwindInfoUseCount() == 1) {
+-    const base::AddressRegion& code_region = heap()->code_region();
+-    void* start = reinterpret_cast<void*>(code_region.begin());
+-    win64_unwindinfo::UnregisterNonABICompliantCodeRange(start);
++      heap()->memory_allocator() && RequiresCodeRange()) {
++    base::MutexGuard guard(init_unwind_info_mutex_.Pointer());
++    if (heap()->code_range()->AtomicDecrementUnwindInfoUseCount() == 1) {
++      const base::AddressRegion& code_region = heap()->code_region();
++      void* start = reinterpret_cast<void*>(code_region.begin());
++      win64_unwindinfo::UnregisterNonABICompliantCodeRange(start);
++    }
+   }
+ #endif  // V8_OS_WIN64
+ 
+@@ -3909,12 +3915,14 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
+   }
+ 
+ #if defined(V8_OS_WIN64)
+-  if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange() &&
+-      heap()->code_range()->AtomicIncrementUnwindInfoUseCount() == 0) {
+-    const base::AddressRegion& code_region = heap()->code_region();
+-    void* start = reinterpret_cast<void*>(code_region.begin());
+-    size_t size_in_bytes = code_region.size();
+-    win64_unwindinfo::RegisterNonABICompliantCodeRange(start, size_in_bytes);
++  if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange()) {
++    base::MutexGuard guard(init_unwind_info_mutex_.Pointer());
++    if (heap()->code_range()->AtomicIncrementUnwindInfoUseCount() == 0) {
++      const base::AddressRegion& code_region = heap()->code_region();
++      void* start = reinterpret_cast<void*>(code_region.begin());
++      size_t size_in_bytes = code_region.size();
++      win64_unwindinfo::RegisterNonABICompliantCodeRange(start, size_in_bytes);
++    }
+   }
+ #endif  // V8_OS_WIN64
+ 
+-- 
+2.33.0
+
