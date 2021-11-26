@@ -1,0 +1,39 @@
+From 7c90567a34c01fdddce465e57a8040ef35d6f5bd Mon Sep 17 00:00:00 2001
+From: Ben Noordhuis <info@bnoordhuis.nl>
+Date: Thu, 25 Nov 2021 13:14:45 +0100
+Subject: [PATCH] [base] fix glibc 2.34 build
+
+PTHREAD_STACK_MIN is an alias for __sysconf(__SC_THREAD_STACK_MIN_VALUE)
+in glibc 2.34.
+
+__sysconf() returns long, causing a -Werror,-Wsign-compare error build
+error.
+
+Change-Id: I15da8e7ee57a6979682ff7166990698965481586
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/3301464
+Commit-Queue: Ben Noordhuis <info@bnoordhuis.nl>
+Reviewed-by: Michael Lippautz <mlippautz@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#78097}
+---
+ src/base/platform/platform-posix.cc | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/src/base/platform/platform-posix.cc b/src/base/platform/platform-posix.cc
+index f05f22c913..d4957aabb0 100644
+--- a/src/base/platform/platform-posix.cc
++++ b/src/base/platform/platform-posix.cc
+@@ -840,9 +840,8 @@ Thread::Thread(const Options& options)
+     : data_(new PlatformData),
+       stack_size_(options.stack_size()),
+       start_semaphore_(nullptr) {
+-  if (stack_size_ > 0 && static_cast<size_t>(stack_size_) < PTHREAD_STACK_MIN) {
+-    stack_size_ = PTHREAD_STACK_MIN;
+-  }
++  const int min_stack_size = static_cast<int>(PTHREAD_STACK_MIN);
++  if (stack_size_ > 0) stack_size_ = std::max(stack_size_, min_stack_size);
+   set_name(options.name());
+ }
+ 
+-- 
+2.32.0
+
