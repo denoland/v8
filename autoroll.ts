@@ -121,7 +121,7 @@ for (const version of V8_VERSIONS) {
   for (const patch of patches) {
     // Apply the patch file.
     console.log(`Applying patch ${patch}`);
-    await run(["git", "am", patch]);
+    await run(["git", "am", "-3", patch]);
   }
 
   // Force push the branch to the denoland remote.
