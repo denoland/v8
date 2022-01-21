@@ -19,6 +19,7 @@ Currently the following V8 branches are actively updated:
 
 - `9.7-lkgr-denoland`
 - `9.8-lkgr-denoland`
+- `9.9-lkgr-denoland`
 
 Old V8 branches are also still available:
 

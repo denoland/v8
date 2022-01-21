@@ -1,6 +1,7 @@
 const V8_VERSIONS = [
   "9.7",
   "9.8",
+  "9.9",
 ];
 
 // Extract the V8 version from the include/v8-version.h file.
@@ -35,36 +36,33 @@ async function run(cmd: string[], cwd: string = "./v8") {
   }
 }
 
-async function tryDelete(path: string) {
+async function pathExists(path: string): Promise<boolean> {
   try {
-    await Deno.remove(path, { recursive: true });
-  } catch (err) {
-    if (err instanceof Deno.errors.NotFound) {
-      return;
-    }
-    throw err;
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
-console.log("Deleting existing V8 clone if it exists.");
-await tryDelete("./v8");
+if (!await pathExists("./v8/.git")) {
+  console.log("Cloning V8. This might take a couple of minutes.");
+  await run([
+    "git",
+    "clone",
+    "https://chromium.googlesource.com/v8/v8.git",
+    "v8",
+  ], ".");
 
-console.log("Cloning V8. This might take a couple of minutes.");
-await run([
-  "git",
-  "clone",
-  "https://chromium.googlesource.com/v8/v8.git",
-  "v8",
-], ".");
-
-console.log("Configuring denoland remote.");
-await run([
-  "git",
-  "remote",
-  "add",
-  "denoland",
-  "https://github.com/denoland/v8.git",
-]);
+  console.log("Configuring denoland remote.");
+  await run([
+    "git",
+    "remote",
+    "add",
+    "denoland",
+    "https://github.com/denoland/v8.git",
+  ]);
+}
 
 console.log("Fetching denoland remote.");
 await run(["git", "fetch", "denoland"]);
@@ -119,6 +117,9 @@ for (const version of V8_VERSIONS) {
     .map((x) => `../patches/${x.name}`);
 
   for (const patch of patches) {
+    if (patch === "../patches/0001-base-fix-glibc-2.34-build.patch") {
+      if (version !== "9.7" && version !== "9.8") continue; // Merged in 9.9
+    }
     // Apply the patch file.
     console.log(`Applying patch ${patch}`);
     await run(["git", "am", "-3", patch]);
