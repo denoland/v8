@@ -1,5 +1,4 @@
 const V8_VERSIONS = [
-  "9.7",
   "9.8",
   "9.9",
 ];
@@ -118,7 +117,7 @@ for (const version of V8_VERSIONS) {
 
   for (const patch of patches) {
     if (patch === "../patches/0001-base-fix-glibc-2.34-build.patch") {
-      if (version !== "9.7" && version !== "9.8") continue; // Merged in 9.9
+      if (version !== "9.8") continue; // Merged in 9.9
     }
     // Apply the patch file.
     console.log(`Applying patch ${patch}`);
