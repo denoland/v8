@@ -25,4 +25,3 @@ jobs:
           git config --global user.password ${{ github.token }}
           git config --global url."https://${{ github.actor }}:${{ github.token }}@github.com/".insteadOf "https://github.com/"
       - run: deno run -A ./autoroll.ts
-          
