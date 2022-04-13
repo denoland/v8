@@ -35,6 +35,22 @@ async function run(cmd: string[], cwd: string = "./v8") {
   }
 }
 
+// This function runs a specified subcommand and waits until the command exits
+// with code 0.
+async function runAndCollect(
+  cmd: string[],
+  cwd: string = "./v8",
+): Promise<Uint8Array> {
+  console.log("$", ...cmd);
+  const proc = Deno.run({ cmd, cwd, stdout: "piped" });
+  const status = await proc.status();
+  if (!status.success) {
+    console.error(`Failed to run ${cmd.join(" ")}`);
+    Deno.exit(1);
+  }
+  return await proc.output();
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await Deno.stat(path);
@@ -116,9 +132,6 @@ for (const version of V8_VERSIONS) {
     .map((x) => `../patches/${x.name}`);
 
   for (const patch of patches) {
-    if (patch === "../patches/0001-base-fix-glibc-2.34-build.patch") {
-      if (version !== "9.8") continue; // Merged in 9.9
-    }
     // Apply the patch file.
     console.log(`Applying patch ${patch}`);
     await run(["git", "am", "-3", patch]);
@@ -127,4 +140,17 @@ for (const version of V8_VERSIONS) {
   // Force push the branch to the denoland remote.
   console.log("Pushing the branch to the remote. This might take a minute.");
   await run(["git", "push", "--force", "denoland", DENOLAND_LKGR]);
+
+  // Get the current commit.
+  const commit = await runAndCollect(["git", "rev-parse", DENOLAND_LKGR]);
+  const currentCommit = new TextDecoder().decode(commit).trim();
+
+  // Create a tag for the new version.
+  const TAG = `${upstreamVersion}-denoland-${currentCommit.slice(0, 20)}`;
+  console.log(`Creating tag ${TAG}`);
+  await run(["git", "tag", TAG]);
+
+  // Push the tag to the denoland remote.
+  console.log("Pushing the tag to the remote.");
+  await run(["git", "push", "--tags", "denoland", TAG]);
 }
