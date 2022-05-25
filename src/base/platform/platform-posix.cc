@@ -481,12 +481,6 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
   int prot = GetProtectionFromMemoryPermission(access);
   int ret = mprotect(address, size, prot);
 
-  // Setting permissions can fail if the limit of VMAs is exceeded.
-  // Any failure that's not OOM likely indicates a bug in the caller (e.g.
-  // using an invalid mapping) so attempt to catch that here to facilitate
-  // debugging of these failures.
-  if (ret != 0) CHECK_EQ(ENOMEM, errno);
-
   // MacOS 11.2 on Apple Silicon refuses to switch permissions from
   // rwx to none. Just use madvise instead.
 #if defined(V8_OS_DARWIN)
@@ -495,6 +489,12 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
     return ret == 0;
   }
 #endif
+
+  // Setting permissions can fail if the limit of VMAs is exceeded.
+  // Any failure that's not OOM likely indicates a bug in the caller (e.g.
+  // using an invalid mapping) so attempt to catch that here to facilitate
+  // debugging of these failures.
+  if (ret != 0) CHECK_EQ(ENOMEM, errno);
 
   if (ret == 0 && access == OS::MemoryPermission::kNoAccess) {
     // This is advisory; ignore errors and continue execution.
