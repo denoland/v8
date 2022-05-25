@@ -1,7 +1,7 @@
-From 254300abae18f2655441e98248187cb70c0cd70e Mon Sep 17 00:00:00 2001
+From a89106dffd331db3226642ef173fa8b16e5d61fc Mon Sep 17 00:00:00 2001
 From: Bert Belder <bertbelder@gmail.com>
 Date: Mon, 15 Nov 2021 15:27:34 -0800
-Subject: [PATCH 1/1] Fix segfault during concurrent isolate creation/disposal
+Subject: [PATCH 2/3] Fix segfault during concurrent isolate creation/disposal
  on Windows
 
 This patch is intentionally left simple to avoid merge conflicts in the
@@ -14,10 +14,10 @@ Upstream bug: https://bugs.chromium.org/p/v8/issues/detail?id=12393
  1 file changed, 19 insertions(+), 11 deletions(-)
 
 diff --git a/src/execution/isolate.cc b/src/execution/isolate.cc
-index de396e8732..cc032b18ad 100644
+index b815074b20..72b55f84ef 100644
 --- a/src/execution/isolate.cc
 +++ b/src/execution/isolate.cc
-@@ -3016,6 +3016,10 @@ v8::PageAllocator* Isolate::page_allocator() const {
+@@ -3243,6 +3243,10 @@ v8::PageAllocator* Isolate::page_allocator() const {
    return isolate_allocator_->page_allocator();
  }
  
@@ -28,7 +28,7 @@ index de396e8732..cc032b18ad 100644
  Isolate::Isolate(std::unique_ptr<i::IsolateAllocator> isolate_allocator,
                   bool is_shared)
      : isolate_data_(this, isolate_allocator->GetPtrComprCageBase()),
-@@ -3140,11 +3144,13 @@ void Isolate::Deinit() {
+@@ -3373,11 +3377,13 @@ void Isolate::Deinit() {
  
  #if defined(V8_OS_WIN64)
    if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange() &&
@@ -47,7 +47,7 @@ index de396e8732..cc032b18ad 100644
    }
  #endif  // V8_OS_WIN64
  
-@@ -3909,12 +3915,14 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
+@@ -4223,12 +4229,14 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
    }
  
  #if defined(V8_OS_WIN64)
