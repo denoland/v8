@@ -481,6 +481,11 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
   }
 #endif
 
+  // Any failure that's not OOM likely indicates a bug in the caller (e.g.
+  // using an invalid mapping) so attempt to catch that here to facilitate
+  // debugging of these failures.
+  if (ret != 0) CHECK_EQ(ENOMEM, errno);
+
   if (ret == 0 && access == OS::MemoryPermission::kNoAccess) {
     // This is advisory; ignore errors and continue execution.
     USE(DiscardSystemPages(address, size));
