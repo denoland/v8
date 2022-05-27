@@ -152,5 +152,5 @@ for (const version of V8_VERSIONS) {
 
   // Push the tag to the denoland remote.
   console.log("Pushing the tag to the remote.");
-  await run(["git", "push", "--tags", "denoland", TAG]);
+  await run(["git", "push", "denoland", TAG]);
 }
