@@ -5323,6 +5323,7 @@ Node* EffectControlLinearizer::LowerFastApiCall(Node* node) {
       break;
     case CTypeInfo::Type::kV8Value:
     case CTypeInfo::Type::kApiObject:
+    case CTypeInfo::Type::kUint8:
       UNREACHABLE();
     case CTypeInfo::Type::kAny:
       fast_call_result =
