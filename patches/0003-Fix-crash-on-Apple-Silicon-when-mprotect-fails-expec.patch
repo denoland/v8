@@ -1,7 +1,7 @@
 From 308f0cd7a4a227f00da010f643863529a67781b5 Mon Sep 17 00:00:00 2001
 From: Bert Belder <bertbelder@gmail.com>
 Date: Wed, 25 May 2022 20:40:04 +0200
-Subject: [PATCH 3/3] Fix crash on Apple Silicon when mprotect() fails
+Subject: [PATCH 3/4] Fix crash on Apple Silicon when mprotect() fails
  expectedly
 
 ---
