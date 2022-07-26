@@ -1,7 +1,7 @@
 From a89106dffd331db3226642ef173fa8b16e5d61fc Mon Sep 17 00:00:00 2001
 From: Bert Belder <bertbelder@gmail.com>
 Date: Mon, 15 Nov 2021 15:27:34 -0800
-Subject: [PATCH 2/3] Fix segfault during concurrent isolate creation/disposal
+Subject: [PATCH 2/4] Fix segfault during concurrent isolate creation/disposal
  on Windows
 
 This patch is intentionally left simple to avoid merge conflicts in the

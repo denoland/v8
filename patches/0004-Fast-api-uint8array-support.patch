@@ -1,0 +1,233 @@
+From 376813dfeb129907f0b892ee5c7350e8a554b3ea Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Wed, 20 Jul 2022 20:11:08 +0530
+Subject: [PATCH 4/4] [fastcall] Implement support for Uint8Array arguments
+
+This CL adds Uint8Array as supported arguments for fast API calls.
+It introduces a kUint8 variant to CTypeInfo for use with TypedArrays
+only.
+
+---
+
+diff --git a/AUTHORS b/AUTHORS
+index 28f97f7..7a85f3a 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -99,6 +99,7 @@
+ Deepak Mohan <hop2deep@gmail.com>
+ Deon Dior <diaoyuanjie@gmail.com>
+ Derek Tu <derek.t@rioslab.org>
++Divy Srivastava <dj.srivastava23@gmail.com>
+ Dominic Chen <d.c.ddcc@gmail.com>
+ Dominic Farolini <domfarolino@gmail.com>
+ Douglas Crosher <dtc-v8@scieneer.com>
+diff --git a/include/v8-fast-api-calls.h b/include/v8-fast-api-calls.h
+index ab776c3..4445d75 100644
+--- a/include/v8-fast-api-calls.h
++++ b/include/v8-fast-api-calls.h
+@@ -240,6 +240,7 @@
+   enum class Type : uint8_t {
+     kVoid,
+     kBool,
++    kUint8,
+     kInt32,
+     kUint32,
+     kInt64,
+@@ -302,8 +303,9 @@
+   constexpr Flags GetFlags() const { return flags_; }
+ 
+   static constexpr bool IsIntegralType(Type type) {
+-    return type == Type::kInt32 || type == Type::kUint32 ||
+-           type == Type::kInt64 || type == Type::kUint64;
++    return type == Type::kUint8 || type == Type::kInt32 ||
++           type == Type::kUint32 || type == Type::kInt64 ||
++           type == Type::kUint64;
+   }
+ 
+   static constexpr bool IsFloatingPointType(Type type) {
+@@ -429,6 +431,7 @@
+     double double_value;
+     Local<Object> object_value;
+     Local<Array> sequence_value;
++    const FastApiTypedArray<uint8_t>* uint8_ta_value;
+     const FastApiTypedArray<int32_t>* int32_ta_value;
+     const FastApiTypedArray<uint32_t>* uint32_ta_value;
+     const FastApiTypedArray<int64_t>* int64_ta_value;
+@@ -653,7 +656,8 @@
+   V(int64_t, kInt64)         \
+   V(uint64_t, kUint64)       \
+   V(float, kFloat32)         \
+-  V(double, kFloat64)
++  V(double, kFloat64)        \
++  V(uint8_t, kUint8)
+ 
+ // Same as above, but includes deprecated types for compatibility.
+ #define ALL_C_TYPES(V)               \
+@@ -692,7 +696,8 @@
+   V(int64_t, kInt64)           \
+   V(uint64_t, kUint64)         \
+   V(float, kFloat32)           \
+-  V(double, kFloat64)
++  V(double, kFloat64)          \
++  V(uint8_t, kUint8)
+ 
+ TYPED_ARRAY_C_TYPES(SPECIALIZE_GET_TYPE_INFO_HELPER_FOR_TA)
+ 
+diff --git a/src/codegen/machine-type.h b/src/codegen/machine-type.h
+index ccbfbfd..4756e22 100644
+--- a/src/codegen/machine-type.h
++++ b/src/codegen/machine-type.h
+@@ -289,6 +289,8 @@
+         return MachineType::AnyTagged();
+       case CTypeInfo::Type::kBool:
+         return MachineType::Bool();
++      case CTypeInfo::Type::kUint8:
++        return MachineType::Uint8();
+       case CTypeInfo::Type::kInt32:
+         return MachineType::Int32();
+       case CTypeInfo::Type::kUint32:
+diff --git a/src/compiler/effect-control-linearizer.cc b/src/compiler/effect-control-linearizer.cc
+index 3a10529..59e474a 100644
+--- a/src/compiler/effect-control-linearizer.cc
++++ b/src/compiler/effect-control-linearizer.cc
+@@ -5195,6 +5195,7 @@
+                 c_call_result, CheckForMinusZeroMode::kCheckForMinusZero);
+           case CTypeInfo::Type::kV8Value:
+           case CTypeInfo::Type::kApiObject:
++          case CTypeInfo::Type::kUint8:
+             UNREACHABLE();
+           case CTypeInfo::Type::kAny:
+             return ChangeFloat64ToTagged(
+diff --git a/src/compiler/fast-api-calls.cc b/src/compiler/fast-api-calls.cc
+index 83f5447..bcb0948 100644
+--- a/src/compiler/fast-api-calls.cc
++++ b/src/compiler/fast-api-calls.cc
+@@ -13,6 +13,8 @@
+ 
+ ElementsKind GetTypedArrayElementsKind(CTypeInfo::Type type) {
+   switch (type) {
++    case CTypeInfo::Type::kUint8:
++      return UINT8_ELEMENTS;
+     case CTypeInfo::Type::kInt32:
+       return INT32_ELEMENTS;
+     case CTypeInfo::Type::kUint32:
+diff --git a/src/compiler/simplified-lowering.cc b/src/compiler/simplified-lowering.cc
+index b13c404..3471f3a 100644
+--- a/src/compiler/simplified-lowering.cc
++++ b/src/compiler/simplified-lowering.cc
+@@ -1898,6 +1898,7 @@
+         }
+         switch (type.GetType()) {
+           case CTypeInfo::Type::kVoid:
++          case CTypeInfo::Type::kUint8:
+             UNREACHABLE();
+           case CTypeInfo::Type::kBool:
+             return UseInfo::Bool();
+diff --git a/src/d8/d8-test.cc b/src/d8/d8-test.cc
+index 4ebaa63..608c0aa 100644
+--- a/src/d8/d8-test.cc
++++ b/src/d8/d8-test.cc
+@@ -279,6 +279,12 @@
+   static const FastApiTypedArray<T>* AnyCTypeToTypedArray(AnyCType arg);
+ 
+   template <>
++  const FastApiTypedArray<uint8_t>* AnyCTypeToTypedArray<uint8_t>(
++      AnyCType arg) {
++    return arg.uint8_ta_value;
++  }
++
++  template <>
+   const FastApiTypedArray<int32_t>* AnyCTypeToTypedArray<int32_t>(
+       AnyCType arg) {
+     return arg.int32_ta_value;
+@@ -333,7 +339,6 @@
+     FastCApiObject* self = UnwrapObject(receiver);
+     CHECK_SELF_OR_FALLBACK(0);
+     self->fast_call_count_++;
+-
+     if (should_fallback) {
+       options.fallback = true;
+       return 0;
+@@ -369,12 +374,15 @@
+     size_t length = typed_array_arg->Length();
+ 
+     void* data = typed_array_arg->Buffer()->GetBackingStore()->Data();
+-    if (typed_array_arg->IsInt32Array() || typed_array_arg->IsUint32Array() ||
++    if (typed_array_arg->IsUint8Array() || typed_array_arg->IsInt32Array() ||
++        typed_array_arg->IsUint32Array() ||
+         typed_array_arg->IsBigInt64Array() ||
+         typed_array_arg->IsBigUint64Array()) {
+       int64_t sum = 0;
+       for (unsigned i = 0; i < length; ++i) {
+-        if (typed_array_arg->IsInt32Array()) {
++        if (typed_array_arg->IsUint8Array()) {
++          sum += static_cast<uint8_t*>(data)[i];
++        } else if (typed_array_arg->IsInt32Array()) {
+           sum += static_cast<int32_t*>(data)[i];
+         } else if (typed_array_arg->IsUint32Array()) {
+           sum += static_cast<uint32_t*>(data)[i];
+@@ -893,6 +901,18 @@
+             signature, 1, ConstructorBehavior::kThrow,
+             SideEffectType::kHasSideEffect, &add_all_seq_c_func));
+ 
++    CFunction add_all_uint8_typed_array_c_func = CFunction::Make(
++        FastCApiObject::AddAllTypedArrayFastCallback<uint8_t>
++            V8_IF_USE_SIMULATOR(
++                FastCApiObject::AddAllTypedArrayFastCallbackPatch<uint8_t>));
++
++    api_obj_ctor->PrototypeTemplate()->Set(
++        isolate, "add_all_uint8_typed_array",
++        FunctionTemplate::New(
++            isolate, FastCApiObject::AddAllTypedArraySlowCallback,
++            Local<Value>(), signature, 1, ConstructorBehavior::kThrow,
++            SideEffectType::kHasSideEffect, &add_all_uint8_typed_array_c_func));
++
+     CFunction add_all_int32_typed_array_c_func = CFunction::Make(
+         FastCApiObject::AddAllTypedArrayFastCallback<int32_t>
+             V8_IF_USE_SIMULATOR(
+diff --git a/test/mjsunit/compiler/fast-api-sequences.js b/test/mjsunit/compiler/fast-api-sequences.js
+index 3d5a981..a5d4cca 100644
+--- a/test/mjsunit/compiler/fast-api-sequences.js
++++ b/test/mjsunit/compiler/fast-api-sequences.js
+@@ -130,6 +130,15 @@
+ // double add_all_<TYPE>_typed_array(bool /*should_fallback*/, FastApiTypedArray<TYPE>)
+ 
+ (function () {
++  function uint8_test() {
++    let typed_array = new Uint8Array([1, 2, 3]);
++    return fast_c_api.add_all_uint8_typed_array(false /* should_fallback */,
++      typed_array);
++  }
++  ExpectFastCall(uint8_test, 6);
++})();
++
++(function () {
+   function int32_test() {
+     let typed_array = new Int32Array([-42, 1, 2, 3]);
+     return fast_c_api.add_all_int32_typed_array(false /* should_fallback */,
+@@ -262,6 +271,25 @@
+   ExpectFastCall(int32_test, 0);
+ })();
+ 
++(function () {
++  function uint8_test() {
++    let typed_array = new Uint8Array(0);
++    return fast_c_api.add_all_uint8_typed_array(false /* should_fallback */,
++      typed_array);
++  }
++  ExpectFastCall(uint8_test, 0);
++})();
++
++// Values out of [0, 255] range are properly truncated.
++(function() {
++  function uint8_test() {
++    let typed_array = new Uint8Array([0, 256, -1]);
++    return fast_c_api.add_all_uint8_typed_array(false /* should_fallback */,
++      typed_array);
++  }
++  ExpectFastCall(uint8_test, 255);
++})();
++
+ // Invalid argument types instead of a TypedArray.
+ (function () {
+   function invalid_test(arg) {
