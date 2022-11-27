@@ -1,0 +1,326 @@
+From 376813dfeb129907f0b892ee5c7350e8a554b3ea Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Tue Nov 22 12:36:54 2022 +0530
+Subject: [PATCH 4/4] [fastcall] Implement support for onebyte string arguments
+
+This CL adds one byte string specialization support for fast API call arguments.
+It introduces a kOneByteString variant to CTypeInfo.
+
+We see a ~6x improvement in Deno's TextEncoder#encode microbenchmark. Rendered: https://divy-v8-patches.deno.dev/
+
+---
+
+diff --git a/include/v8-fast-api-calls.h b/include/v8-fast-api-calls.h
+index 1826f13321..9ea43fe253 100644
+--- a/include/v8-fast-api-calls.h
++++ b/include/v8-fast-api-calls.h
+@@ -248,6 +248,7 @@ class CTypeInfo {
+     kFloat32,
+     kFloat64,
+     kV8Value,
++    kSeqOneByteString,
+     kApiObject,  // This will be deprecated once all users have
+                  // migrated from v8::ApiObject to v8::Local<v8::Value>.
+     kAny,        // This is added to enable untyped representation of fast
+@@ -379,6 +380,11 @@ struct FastApiArrayBuffer {
+   size_t byte_length;
+ };
+
++struct FastOneByteString {
++  const char* data;
++  uint32_t length;
++};
++
+ class V8_EXPORT CFunctionInfo {
+  public:
+   // Construct a struct to hold a CFunction's type information.
+@@ -438,6 +444,7 @@ struct AnyCType {
+     const FastApiTypedArray<uint64_t>* uint64_ta_value;
+     const FastApiTypedArray<float>* float_ta_value;
+     const FastApiTypedArray<double>* double_ta_value;
++    const FastOneByteString* string_value;
+     FastApiCallbackOptions* options_value;
+   };
+ };
+@@ -614,7 +621,7 @@ class CFunctionInfoImpl : public CFunctionInfo {
+                       kReturnType == CTypeInfo::Type::kFloat32 ||
+                       kReturnType == CTypeInfo::Type::kFloat64 ||
+                       kReturnType == CTypeInfo::Type::kAny,
+-                  "64-bit int and api object values are not currently "
++                  "64-bit int, string and api object values are not currently "
+                   "supported return types.");
+   }
+
+@@ -735,6 +742,18 @@ struct TypeInfoHelper<FastApiCallbackOptions&> {
+   }
+ };
+
++template <>
++struct TypeInfoHelper<const FastOneByteString&> {
++  static constexpr CTypeInfo::Flags Flags() { return CTypeInfo::Flags::kNone; }
++
++  static constexpr CTypeInfo::Type Type() {
++    return CTypeInfo::Type::kSeqOneByteString;
++  }
++  static constexpr CTypeInfo::SequenceType SequenceType() {
++    return CTypeInfo::SequenceType::kScalar;
++  }
++};
++
+ #define STATIC_ASSERT_IMPLIES(COND, ASSERTION, MSG) \
+   static_assert(((COND) == 0) || (ASSERTION), MSG)
+
+diff --git a/src/codegen/machine-type.h b/src/codegen/machine-type.h
+index 29d7de7583..38834d2394 100644
+--- a/src/codegen/machine-type.h
++++ b/src/codegen/machine-type.h
+@@ -315,6 +315,7 @@ class MachineType {
+       case CTypeInfo::Type::kFloat64:
+         return MachineType::Float64();
+       case CTypeInfo::Type::kV8Value:
++      case CTypeInfo::Type::kSeqOneByteString:
+       case CTypeInfo::Type::kApiObject:
+         return MachineType::AnyTagged();
+     }
+diff --git a/src/compiler/effect-control-linearizer.cc b/src/compiler/effect-control-linearizer.cc
+index 66be2a8772..6c934d99ac 100644
+--- a/src/compiler/effect-control-linearizer.cc
++++ b/src/compiler/effect-control-linearizer.cc
+@@ -5230,6 +5230,50 @@ Node* EffectControlLinearizer::AdaptFastCallArgument(
+           case CTypeInfo::Type::kFloat32: {
+             return __ TruncateFloat64ToFloat32(node);
+           }
++          case CTypeInfo::Type::kSeqOneByteString: {
++            // Check that the value is a HeapObject.
++            Node* value_is_smi = ObjectIsSmi(node);
++            __ GotoIf(value_is_smi, if_error);
++
++            Node* map = __ LoadField(AccessBuilder::ForMap(), node);
++            Node* instance_type =
++                __ LoadField(AccessBuilder::ForMapInstanceType(), map);
++
++            Node* encoding = __ Word32And(
++                instance_type,
++                __ Int32Constant(kStringRepresentationAndEncodingMask));
++
++            Node* is_onebytestring = __ Word32Equal(
++                encoding, __ Int32Constant(kSeqOneByteStringTag));
++            __ GotoIfNot(is_onebytestring, if_error);
++
++            Node* length_in_bytes =
++                __ LoadField(AccessBuilder::ForStringLength(), node);
++            Node* data_ptr = __ IntPtrAdd(
++                node, __ IntPtrConstant(SeqOneByteString::kHeaderSize -
++                                        kHeapObjectTag));
++
++            constexpr int kAlign = alignof(FastOneByteString);
++            constexpr int kSize = sizeof(FastOneByteString);
++            static_assert(kSize == sizeof(uintptr_t) + sizeof(size_t),
++                          "The size of "
++                          "FastOneByteString isn't equal to the sum of its "
++                          "expected members.");
++            Node* stack_slot = __ StackSlot(kSize, kAlign);
++
++            __ Store(StoreRepresentation(MachineType::PointerRepresentation(),
++                                         kNoWriteBarrier),
++                     stack_slot, 0, data_ptr);
++            __ Store(StoreRepresentation(MachineRepresentation::kWord32,
++                                         kNoWriteBarrier),
++                     stack_slot, sizeof(size_t), length_in_bytes);
++
++            static_assert(sizeof(uintptr_t) == sizeof(size_t),
++                          "The string length can't "
++                          "fit the PointerRepresentation used to store it.");
++
++            return stack_slot;
++          }
+           default: {
+             return node;
+           }
+@@ -5435,6 +5479,7 @@ Node* EffectControlLinearizer::LowerFastApiCall(Node* node) {
+           case CTypeInfo::Type::kFloat64:
+             return ChangeFloat64ToTagged(
+                 c_call_result, CheckForMinusZeroMode::kCheckForMinusZero);
++          case CTypeInfo::Type::kSeqOneByteString:
+           case CTypeInfo::Type::kV8Value:
+           case CTypeInfo::Type::kApiObject:
+           case CTypeInfo::Type::kUint8:
+diff --git a/src/compiler/fast-api-calls.cc b/src/compiler/fast-api-calls.cc
+index 02faf86673..170acbae57 100644
+--- a/src/compiler/fast-api-calls.cc
++++ b/src/compiler/fast-api-calls.cc
+@@ -28,6 +28,7 @@ ElementsKind GetTypedArrayElementsKind(CTypeInfo::Type type) {
+     case CTypeInfo::Type::kFloat64:
+       return FLOAT64_ELEMENTS;
+     case CTypeInfo::Type::kVoid:
++    case CTypeInfo::Type::kSeqOneByteString:
+     case CTypeInfo::Type::kBool:
+     case CTypeInfo::Type::kV8Value:
+     case CTypeInfo::Type::kApiObject:
+diff --git a/src/compiler/simplified-lowering.cc b/src/compiler/simplified-lowering.cc
+index 7ab5810767..68e041da10 100644
+--- a/src/compiler/simplified-lowering.cc
++++ b/src/compiler/simplified-lowering.cc
+@@ -1917,6 +1917,7 @@ class RepresentationSelector {
+           case CTypeInfo::Type::kFloat64:
+             return UseInfo::CheckedNumberAsFloat64(kDistinguishZeros, feedback);
+           case CTypeInfo::Type::kV8Value:
++          case CTypeInfo::Type::kSeqOneByteString:
+           case CTypeInfo::Type::kApiObject:
+             return UseInfo::AnyTagged();
+         }
+diff --git a/src/d8/d8-test.cc b/src/d8/d8-test.cc
+index 3a7f0397dc..8400a8abcd 100644
+--- a/src/d8/d8-test.cc
++++ b/src/d8/d8-test.cc
+@@ -42,6 +42,43 @@ class FastCApiObject {
+  public:
+   static FastCApiObject& instance();
+
++#ifdef V8_USE_SIMULATOR_WITH_GENERIC_C_CALLS
++  static AnyCType CopyStringFastCallbackPatch(AnyCType receiver,
++                                              AnyCType should_fallback,
++                                              AnyCType source, AnyCType out,
++                                              AnyCType options) {
++    AnyCType ret;
++    CopyStringFastCallback(receiver.object_value, should_fallback.bool_value,
++                           source.string_value, out.uint8_ta_value,
++                           *options.options_value);
++    return ret;
++  }
++
++#endif  //  V8_USE_SIMULATOR_WITH_GENERIC_C_CALLS
++  static void CopyStringFastCallback(Local<Object> receiver,
++                                     bool should_fallback,
++                                     const FastOneByteString& source,
++                                     const FastApiTypedArray<uint8_t>& out,
++                                     FastApiCallbackOptions& options) {
++    FastCApiObject* self = UnwrapObject(receiver);
++    self->fast_call_count_++;
++
++    if (should_fallback) {
++      options.fallback = true;
++    } else {
++      options.fallback = false;
++    }
++
++    uint8_t* memory = nullptr;
++    CHECK(out.getStorageIfAligned(&memory));
++    memcpy(memory, source.data, source.length);
++  }
++
++  static void CopyStringSlowCallback(const FunctionCallbackInfo<Value>& args) {
++    FastCApiObject* self = UnwrapObject(args.This());
++    CHECK_SELF_OR_THROW();
++    self->slow_call_count_++;
++  }
+ #ifdef V8_USE_SIMULATOR_WITH_GENERIC_C_CALLS
+   static AnyCType AddAllFastCallbackPatch(AnyCType receiver,
+                                           AnyCType should_fallback,
+@@ -1017,6 +1054,16 @@ Local<FunctionTemplate> Shell::CreateTestFastCApiTemplate(Isolate* isolate) {
+   PerIsolateData::Get(isolate)->SetTestApiObjectCtor(api_obj_ctor);
+   Local<Signature> signature = Signature::New(isolate, api_obj_ctor);
+   {
++    CFunction copy_str_func = CFunction::Make(
++        FastCApiObject::CopyStringFastCallback V8_IF_USE_SIMULATOR(
++            FastCApiObject::CopyStringFastCallbackPatch));
++    api_obj_ctor->PrototypeTemplate()->Set(
++        isolate, "copy_string",
++        FunctionTemplate::New(isolate, FastCApiObject::CopyStringSlowCallback,
++                              Local<Value>(), signature, 1,
++                              ConstructorBehavior::kThrow,
++                              SideEffectType::kHasSideEffect, &copy_str_func));
++
+     CFunction add_all_c_func =
+         CFunction::Make(FastCApiObject::AddAllFastCallback V8_IF_USE_SIMULATOR(
+             FastCApiObject::AddAllFastCallbackPatch));
+diff --git a/test/mjsunit/compiler/fast-api-calls-string.js b/test/mjsunit/compiler/fast-api-calls-string.js
+new file mode 100644
+index 0000000000..70e33c9a2d
+--- /dev/null
++++ b/test/mjsunit/compiler/fast-api-calls-string.js
+@@ -0,0 +1,84 @@
++// Copyright 2022 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// This file excercises one byte string support for fast API calls.
++
++// Flags: --turbo-fast-api-calls --expose-fast-api --allow-natives-syntax --turbofan
++// --always-turbofan is disabled because we rely on particular feedback for
++// optimizing to the fastest path.
++// Flags: --no-always-turbofan
++// The test relies on optimizing/deoptimizing at predictable moments, so
++// it's not suitable for deoptimization fuzzing.
++// Flags: --deopt-every-n-times=0
++
++assertThrows(() => d8.test.FastCAPI());
++const fast_c_api = new d8.test.FastCAPI();
++
++function assertSlowCall(input) {
++  assertEquals(new Uint8Array(input.length), copy_string(false, input));
++}
++
++function assertFastCall(input) {
++  const bytes = Uint8Array.from(input, c => c.charCodeAt(0));
++  assertEquals(bytes, copy_string(false, input));
++}
++
++function copy_string(should_fallback = false, input) {
++  const buffer = new Uint8Array(input.length);
++  fast_c_api.copy_string(should_fallback, input, buffer);
++  return buffer;
++}
++
++%PrepareFunctionForOptimization(copy_string);
++assertSlowCall('Hello');
++%OptimizeFunctionOnNextCall(copy_string);
++
++fast_c_api.reset_counts();
++assertFastCall('Hello');
++assertFastCall('');
++assertFastCall(['Hello', 'World'].join(''));
++assertOptimized(copy_string);
++assertEquals(3, fast_c_api.fast_call_count());
++assertEquals(0, fast_c_api.slow_call_count());
++
++// Fall back for twobyte strings.
++fast_c_api.reset_counts();
++assertSlowCall('Hello\u{10000}');
++assertSlowCall('नमस्ते');
++assertSlowCall(['नमस्ते', 'World'].join(''));
++assertOptimized(copy_string);
++assertEquals(0, fast_c_api.fast_call_count());
++assertEquals(3, fast_c_api.slow_call_count());
++
++// Fall back for cons strings.
++function getTwoByteString() {
++  return '\u1234t';
++}
++function getCons() {
++  return 'hello' + getTwoByteString()
++}
++
++fast_c_api.reset_counts();
++assertSlowCall(getCons());
++assertOptimized(copy_string);
++assertEquals(0, fast_c_api.fast_call_count());
++assertEquals(1, fast_c_api.slow_call_count());
++
++// Fall back for sliced strings.
++fast_c_api.reset_counts();
++function getSliced() {
++  return getCons().slice(1);
++}
++assertSlowCall(getSliced());
++assertOptimized(copy_string);
++assertEquals(0, fast_c_api.fast_call_count());
++assertEquals(1, fast_c_api.slow_call_count());
++
++// Fall back for SMI and non-string inputs.
++fast_c_api.reset_counts();
++assertSlowCall(1);
++assertSlowCall({});
++assertSlowCall(new Uint8Array(1));
++assertEquals(0, fast_c_api.fast_call_count());
++assertEquals(3, fast_c_api.slow_call_count());
