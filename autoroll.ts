@@ -116,12 +116,12 @@ for (const version of V8_VERSIONS) {
 
   // If the upstream version does not match the current version, then we need to
   // roll.
-  if (upstreamVersion === currentVersion) {
-    console.log(
-      `Upstream version ${upstreamVersion} matches current version ${currentVersion}. No need to roll ${UPSTREAM_LKGR}.`,
-    );
-    continue;
-  }
+  // if (upstreamVersion === currentVersion) {
+  //   console.log(
+  //     `Upstream version ${upstreamVersion} matches current version ${currentVersion}. No need to roll ${UPSTREAM_LKGR}.`,
+  //   );
+  //   continue;
+  // }
 
   console.log(
     `Upstream version ${upstreamVersion} does not match current version ${currentVersion}. Rolling ${UPSTREAM_LKGR}...`,

@@ -1,0 +1,768 @@
+From 744570e583a611a7330871c13feb8e2df4d7e6df Mon Sep 17 00:00:00 2001
+From: Aapo Alasuutari <aapo.alasuutari@gmail.com>
+Date: Thu, 01 Dec 2022 15:30:10 +0200
+Subject: [PATCH] [fastcall] Support external pointers in fast api calls
+
+Bug: chromium:1052746
+
+Change-Id: I3de37ca453b640b7f714e585848ccd068dd9ddbc
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/3957815
+Commit-Queue: Maya Lekova <mslekova@chromium.org>
+Reviewed-by: Toon Verwaest <verwaest@chromium.org>
+Reviewed-by: Samuel Groß <saelo@chromium.org>
+Reviewed-by: Maya Lekova <mslekova@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#84597}
+---
+
+diff --git a/AUTHORS b/AUTHORS
+index b8f3d78..7a3bf83 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -44,6 +44,7 @@
+ Alibaba, Inc. <*@alibaba-inc.com>
+ SiFive, Inc. <*@sifive.com>
+ 
++Aapo Alasuutari <aapo.alasuutari@gmail.com>
+ Aaron Bieber <deftly@gmail.com>
+ Aaron O'Mullan <aaron.omullan@gmail.com>
+ Abdulla Kamar <abdulla.kamar@gmail.com>
+diff --git a/include/v8-fast-api-calls.h b/include/v8-fast-api-calls.h
+index 9ea43fe..0fe7cd2 100644
+--- a/include/v8-fast-api-calls.h
++++ b/include/v8-fast-api-calls.h
+@@ -247,6 +247,7 @@
+     kUint64,
+     kFloat32,
+     kFloat64,
++    kPointer,
+     kV8Value,
+     kSeqOneByteString,
+     kApiObject,  // This will be deprecated once all users have
+@@ -435,6 +436,7 @@
+     uint64_t uint64_value;
+     float float_value;
+     double double_value;
++    void* pointer_value;
+     Local<Object> object_value;
+     Local<Array> sequence_value;
+     const FastApiTypedArray<uint8_t>* uint8_ta_value;
+@@ -620,6 +622,7 @@
+                       kReturnType == CTypeInfo::Type::kUint32 ||
+                       kReturnType == CTypeInfo::Type::kFloat32 ||
+                       kReturnType == CTypeInfo::Type::kFloat64 ||
++                      kReturnType == CTypeInfo::Type::kPointer ||
+                       kReturnType == CTypeInfo::Type::kAny,
+                   "64-bit int, string and api object values are not currently "
+                   "supported return types.");
+@@ -658,13 +661,14 @@
+ 
+ #define PRIMITIVE_C_TYPES(V) \
+   V(bool, kBool)             \
++  V(uint8_t, kUint8)         \
+   V(int32_t, kInt32)         \
+   V(uint32_t, kUint32)       \
+   V(int64_t, kInt64)         \
+   V(uint64_t, kUint64)       \
+   V(float, kFloat32)         \
+   V(double, kFloat64)        \
+-  V(uint8_t, kUint8)
++  V(void*, kPointer)
+ 
+ // Same as above, but includes deprecated types for compatibility.
+ #define ALL_C_TYPES(V)               \
+@@ -698,13 +702,13 @@
+   };
+ 
+ #define TYPED_ARRAY_C_TYPES(V) \
++  V(uint8_t, kUint8)           \
+   V(int32_t, kInt32)           \
+   V(uint32_t, kUint32)         \
+   V(int64_t, kInt64)           \
+   V(uint64_t, kUint64)         \
+   V(float, kFloat32)           \
+-  V(double, kFloat64)          \
+-  V(uint8_t, kUint8)
++  V(double, kFloat64)
+ 
+ TYPED_ARRAY_C_TYPES(SPECIALIZE_GET_TYPE_INFO_HELPER_FOR_TA)
+ 
+diff --git a/include/v8-internal.h b/include/v8-internal.h
+index 572f57a..c561303 100644
+--- a/include/v8-internal.h
++++ b/include/v8-internal.h
+@@ -402,6 +402,9 @@
+   V(kForeignForeignAddressTag,                  TAG(10)) \
+   V(kNativeContextMicrotaskQueueTag,            TAG(11)) \
+   V(kEmbedderDataSlotPayloadTag,                TAG(12)) \
++/* This tag essentially stands for a `void*` pointer in the V8 API, and */ \
++/* it is the Embedder's responsibility to ensure type safety (against */   \
++/* substitution) and lifetime validity of these objects. */                \
+   V(kExternalObjectValueTag,                    TAG(13)) \
+   V(kCallHandlerInfoCallbackTag,                TAG(14)) \
+   V(kAccessorInfoGetterTag,                     TAG(15)) \
+diff --git a/src/codegen/external-reference.cc b/src/codegen/external-reference.cc
+index 83fcf82..1addb60 100644
+--- a/src/codegen/external-reference.cc
++++ b/src/codegen/external-reference.cc
+@@ -353,6 +353,19 @@
+ FUNCTION_REFERENCE(ephemeron_key_write_barrier_function,
+                    Heap::EphemeronKeyWriteBarrierFromCode)
+ 
++ExternalPointerHandle AllocateAndInitializeExternalPointerTableEntry(
++    Isolate* isolate, Address pointer) {
++#ifdef V8_ENABLE_SANDBOX
++  return isolate->external_pointer_table().AllocateAndInitializeEntry(
++      isolate, pointer, kExternalObjectValueTag);
++#else
++  return 0;
++#endif  // V8_ENABLE_SANDBOX
++}
++
++FUNCTION_REFERENCE(allocate_and_initialize_external_pointer_table_entry,
++                   AllocateAndInitializeExternalPointerTableEntry)
++
+ FUNCTION_REFERENCE(get_date_field_function, JSDate::GetField)
+ 
+ ExternalReference ExternalReference::date_cache_stamp(Isolate* isolate) {
+diff --git a/src/codegen/external-reference.h b/src/codegen/external-reference.h
+index 3c79c675..6ca4097 100644
+--- a/src/codegen/external-reference.h
++++ b/src/codegen/external-reference.h
+@@ -119,6 +119,8 @@
+   V(address_of_shared_string_table_flag, "v8_flags.shared_string_table")       \
+   V(address_of_the_hole_nan, "the_hole_nan")                                   \
+   V(address_of_uint32_bias, "uint32_bias")                                     \
++  V(allocate_and_initialize_external_pointer_table_entry,                      \
++    "AllocateAndInitializeExternalPointerTableEntry")                          \
+   V(baseline_pc_for_bytecode_offset, "BaselinePCForBytecodeOffset")            \
+   V(baseline_pc_for_next_executed_bytecode,                                    \
+     "BaselinePCForNextExecutedBytecode")                                       \
+diff --git a/src/codegen/machine-type.h b/src/codegen/machine-type.h
+index 38834d2..286ce8e 100644
+--- a/src/codegen/machine-type.h
++++ b/src/codegen/machine-type.h
+@@ -314,6 +314,8 @@
+         return MachineType::Float32();
+       case CTypeInfo::Type::kFloat64:
+         return MachineType::Float64();
++      case CTypeInfo::Type::kPointer:
++        return MachineType::Pointer();
+       case CTypeInfo::Type::kV8Value:
+       case CTypeInfo::Type::kSeqOneByteString:
+       case CTypeInfo::Type::kApiObject:
+diff --git a/src/compiler/access-builder.cc b/src/compiler/access-builder.cc
+index 3156b22..0f82b3a 100644
+--- a/src/compiler/access-builder.cc
++++ b/src/compiler/access-builder.cc
+@@ -156,6 +156,35 @@
+ }
+ 
+ // static
++FieldAccess AccessBuilder::ForJSExternalObjectValue() {
++  FieldAccess access = {
++      kTaggedBase,
++      JSExternalObject::kValueOffset,
++      MaybeHandle<Name>(),
++      MaybeHandle<Map>(),
++      Type::ExternalPointer(),
++      MachineType::Pointer(),
++      kNoWriteBarrier,
++      "JSExternalObjectValue",
++      ConstFieldInfo::None(),
++      false,
++      kExternalObjectValueTag,
++  };
++  return access;
++}
++
++#ifdef V8_ENABLE_SANDBOX
++// static
++FieldAccess AccessBuilder::ForJSExternalObjectPointerHandle() {
++  FieldAccess access = {
++      kTaggedBase,        JSExternalObject::kValueOffset, MaybeHandle<Name>(),
++      MaybeHandle<Map>(), TypeCache::Get()->kUint32,      MachineType::Uint32(),
++      kNoWriteBarrier,    "JSExternalObjectPointerHandle"};
++  return access;
++}
++#endif
++
++// static
+ FieldAccess AccessBuilder::ForJSFunctionPrototypeOrInitialMap() {
+   FieldAccess access = {
+       kTaggedBase,          JSFunction::kPrototypeOrInitialMapOffset,
+diff --git a/src/compiler/access-builder.h b/src/compiler/access-builder.h
+index f4735ae..cbb71fa 100644
+--- a/src/compiler/access-builder.h
++++ b/src/compiler/access-builder.h
+@@ -74,6 +74,15 @@
+   // Provides access to JSCollectionIterator::index() field.
+   static FieldAccess ForJSCollectionIteratorIndex();
+ 
++  // Provides access to an ExternalPointer through the JSExternalObject::value()
++  // field.
++  static FieldAccess ForJSExternalObjectValue();
++
++#ifdef V8_ENABLE_SANDBOX
++  // Provides access to JSExternalObject::value() field.
++  static FieldAccess ForJSExternalObjectPointerHandle();
++#endif
++
+   // Provides access to JSFunction::prototype_or_initial_map() field.
+   static FieldAccess ForJSFunctionPrototypeOrInitialMap();
+ 
+diff --git a/src/compiler/effect-control-linearizer.cc b/src/compiler/effect-control-linearizer.cc
+index ba98037..d587e7a 100644
+--- a/src/compiler/effect-control-linearizer.cc
++++ b/src/compiler/effect-control-linearizer.cc
+@@ -25,6 +25,7 @@
+ #include "src/compiler/schedule.h"
+ #include "src/heap/factory-inl.h"
+ #include "src/objects/heap-number.h"
++#include "src/objects/js-objects.h"
+ #include "src/objects/oddball.h"
+ #include "src/objects/ordered-hash-table.h"
+ #include "src/objects/turbofan-types.h"
+@@ -319,6 +320,8 @@
+   // Pass {bitfield} = {digit} = nullptr to construct the canoncial 0n BigInt.
+   Node* BuildAllocateBigInt(Node* bitfield, Node* digit);
+ 
++  Node* BuildAllocateJSExternalObject(Node* pointer);
++
+   void TransitionElementsTo(Node* node, Node* array, ElementsKind from,
+                             ElementsKind to);
+ 
+@@ -5491,6 +5494,38 @@
+           case CTypeInfo::Type::kFloat32: {
+             return __ TruncateFloat64ToFloat32(node);
+           }
++          case CTypeInfo::Type::kPointer: {
++            // Check that the value is a HeapObject.
++            Node* const value_is_smi = ObjectIsSmi(node);
++            __ GotoIf(value_is_smi, if_error);
++
++            auto if_null = __ MakeDeferredLabel();
++            auto done = __ MakeLabel(MachineType::PointerRepresentation());
++
++            // Check if the value is null
++            __ GotoIf(__ TaggedEqual(node, __ NullConstant()), &if_null);
++
++            {
++              // Check that the value is a JSExternalObject.
++              Node* const is_external =
++                  __ TaggedEqual(__ LoadField(AccessBuilder::ForMap(), node),
++                                 __ ExternalObjectMapConstant());
++
++              __ GotoIfNot(is_external, if_error);
++
++              Node* external_pointer =
++                  __ LoadField(AccessBuilder::ForJSExternalObjectValue(), node);
++
++              __ Goto(&done, external_pointer);
++            }
++
++            // Value is null, signifying a null pointer.
++            __ Bind(&if_null);
++            { __ Goto(&done, __ IntPtrConstant(0)); }
++
++            __ Bind(&done);
++            return done.PhiAt(0);
++          }
+           case CTypeInfo::Type::kSeqOneByteString: {
+             // Check that the value is a HeapObject.
+             Node* value_is_smi = ObjectIsSmi(node);
+@@ -5740,6 +5775,8 @@
+           case CTypeInfo::Type::kFloat64:
+             return ChangeFloat64ToTagged(
+                 c_call_result, CheckForMinusZeroMode::kCheckForMinusZero);
++          case CTypeInfo::Type::kPointer:
++            return BuildAllocateJSExternalObject(c_call_result);
+           case CTypeInfo::Type::kSeqOneByteString:
+           case CTypeInfo::Type::kV8Value:
+           case CTypeInfo::Type::kApiObject:
+@@ -7155,6 +7192,58 @@
+   return result;
+ }
+ 
++Node* EffectControlLinearizer::BuildAllocateJSExternalObject(Node* pointer) {
++  auto if_null = __ MakeDeferredLabel();
++  auto done = __ MakeLabel(MachineRepresentation::kTagged);
++
++  // Check if the pointer is a null pointer
++  __ GotoIf(__ WordEqual(pointer, __ IntPtrConstant(0)), &if_null);
++
++  {
++    Node* external =
++        __ Allocate(AllocationType::kYoung,
++                    __ IntPtrConstant(JSExternalObject::kHeaderSize));
++    __ StoreField(AccessBuilder::ForMap(), external,
++                  __ ExternalObjectMapConstant());
++    Node* empty_fixed_array = __ HeapConstant(factory()->empty_fixed_array());
++    __ StoreField(AccessBuilder::ForJSObjectPropertiesOrHash(), external,
++                  empty_fixed_array);
++    __ StoreField(AccessBuilder::ForJSObjectElements(), external,
++                  empty_fixed_array);
++
++#ifdef V8_ENABLE_SANDBOX
++    Node* const isolate_ptr =
++        __ ExternalConstant(ExternalReference::isolate_address(isolate()));
++    MachineSignature::Builder builder(graph()->zone(), 1, 2);
++    builder.AddReturn(MachineType::Uint32());
++    builder.AddParam(MachineType::Pointer());
++    builder.AddParam(MachineType::Pointer());
++    Node* allocate_and_initialize_external_pointer_table_entry =
++        __ ExternalConstant(
++            ExternalReference::
++                allocate_and_initialize_external_pointer_table_entry());
++    auto call_descriptor =
++        Linkage::GetSimplifiedCDescriptor(graph()->zone(), builder.Build());
++    Node* handle = __ Call(common()->Call(call_descriptor),
++                           allocate_and_initialize_external_pointer_table_entry,
++                           isolate_ptr, pointer);
++
++    __ StoreField(AccessBuilder::ForJSExternalObjectPointerHandle(), external,
++                  handle);
++#else
++    __ StoreField(AccessBuilder::ForJSExternalObjectValue(), external, pointer);
++#endif  // V8_ENABLE_SANDBOX
++    __ Goto(&done, external);
++  }
++
++  // Pointer is null, convert to a null
++  __ Bind(&if_null);
++  { __ Goto(&done, __ NullConstant()); }
++
++  __ Bind(&done);
++  return done.PhiAt(0);
++}
++
+ #undef __
+ 
+ void LinearizeEffectControl(JSGraph* graph, Schedule* schedule, Zone* temp_zone,
+diff --git a/src/compiler/fast-api-calls.cc b/src/compiler/fast-api-calls.cc
+index 8465079..c5f962a 100644
+--- a/src/compiler/fast-api-calls.cc
++++ b/src/compiler/fast-api-calls.cc
+@@ -31,6 +31,7 @@
+     case CTypeInfo::Type::kVoid:
+     case CTypeInfo::Type::kSeqOneByteString:
+     case CTypeInfo::Type::kBool:
++    case CTypeInfo::Type::kPointer:
+     case CTypeInfo::Type::kV8Value:
+     case CTypeInfo::Type::kApiObject:
+     case CTypeInfo::Type::kAny:
+diff --git a/src/compiler/graph-assembler.h b/src/compiler/graph-assembler.h
+index f647042..604b143 100644
+--- a/src/compiler/graph-assembler.h
++++ b/src/compiler/graph-assembler.h
+@@ -142,6 +142,7 @@
+   V(BigIntMap, Map)                             \
+   V(BooleanMap, Map)                            \
+   V(EmptyString, String)                        \
++  V(ExternalObjectMap, Map)                     \
+   V(False, Boolean)                             \
+   V(FixedArrayMap, Map)                         \
+   V(FixedDoubleArrayMap, Map)                   \
+diff --git a/src/compiler/js-graph.cc b/src/compiler/js-graph.cc
+index 302297a..a639133 100644
+--- a/src/compiler/js-graph.cc
++++ b/src/compiler/js-graph.cc
+@@ -187,6 +187,9 @@
+         graph()->zone()->New<ZoneVector<MachineType>>(0, graph()->zone()),
+         SparseInputMask(SparseInputMask::kEndMarker << 1))))
+ 
++DEFINE_GETTER(ExternalObjectMapConstant,
++              HeapConstant(factory()->external_map()))
++
+ #undef DEFINE_GETTER
+ #undef GET_CACHED_FIELD
+ 
+diff --git a/src/compiler/js-graph.h b/src/compiler/js-graph.h
+index 2b7d901..a06411f 100644
+--- a/src/compiler/js-graph.h
++++ b/src/compiler/js-graph.h
+@@ -107,7 +107,8 @@
+   V(MinusOneConstant)                             \
+   V(NaNConstant)                                  \
+   V(EmptyStateValues)                             \
+-  V(SingleDeadTypedStateValues)
++  V(SingleDeadTypedStateValues)                   \
++  V(ExternalObjectMapConstant)
+ 
+ // Cached global node accessor methods.
+ #define DECLARE_GETTER(name) Node* name();
+diff --git a/src/compiler/memory-lowering.cc b/src/compiler/memory-lowering.cc
+index ad09310..8624dff 100644
+--- a/src/compiler/memory-lowering.cc
++++ b/src/compiler/memory-lowering.cc
+@@ -5,6 +5,7 @@
+ #include "src/compiler/memory-lowering.h"
+ 
+ #include "src/codegen/interface-descriptors-inl.h"
++#include "src/common/globals.h"
+ #include "src/compiler/js-graph.h"
+ #include "src/compiler/linkage.h"
+ #include "src/compiler/node-matchers.h"
+@@ -595,8 +596,9 @@
+                                            AllocationState const* state) {
+   DCHECK_EQ(IrOpcode::kStoreField, node->opcode());
+   FieldAccess const& access = FieldAccessOf(node->op());
+-  // External pointer must never be stored by optimized code.
+-  DCHECK(!access.type.Is(Type::ExternalPointer()));
++  // External pointer must never be stored by optimized code when sandbox is
++  // turned on
++  DCHECK(!access.type.Is(Type::ExternalPointer()) || !V8_ENABLE_SANDBOX_BOOL);
+   // SandboxedPointers are not currently stored by optimized code.
+   DCHECK(!access.type.Is(Type::SandboxedPointer()));
+   // Bounded size fields are not currently stored by optimized code.
+diff --git a/src/compiler/simplified-lowering.cc b/src/compiler/simplified-lowering.cc
+index 6d9f6de..29c5a0b 100644
+--- a/src/compiler/simplified-lowering.cc
++++ b/src/compiler/simplified-lowering.cc
+@@ -1960,6 +1960,7 @@
+           case CTypeInfo::Type::kFloat32:
+           case CTypeInfo::Type::kFloat64:
+             return UseInfo::CheckedNumberAsFloat64(kDistinguishZeros, feedback);
++          case CTypeInfo::Type::kPointer:
+           case CTypeInfo::Type::kV8Value:
+           case CTypeInfo::Type::kSeqOneByteString:
+           case CTypeInfo::Type::kApiObject:
+diff --git a/src/compiler/turboshaft/graph-builder.cc b/src/compiler/turboshaft/graph-builder.cc
+index 098be19..642ec8a 100644
+--- a/src/compiler/turboshaft/graph-builder.cc
++++ b/src/compiler/turboshaft/graph-builder.cc
+@@ -941,7 +941,8 @@
+       OpIndex value = Map(node->InputAt(1));
+       FieldAccess const& access = FieldAccessOf(node->op());
+       // External pointer must never be stored by optimized code.
+-      DCHECK(!access.type.Is(Type::ExternalPointer()));
++      DCHECK(!access.type.Is(Type::ExternalPointer()) ||
++             !V8_ENABLE_SANDBOX_BOOL);
+       // SandboxedPointers are not currently stored by optimized code.
+       DCHECK(!access.type.Is(Type::SandboxedPointer()));
+ 
+diff --git a/src/d8/d8-test.cc b/src/d8/d8-test.cc
+index b9f471e4..d80a9c1 100644
+--- a/src/d8/d8-test.cc
++++ b/src/d8/d8-test.cc
+@@ -1029,6 +1029,132 @@
+     args.GetIsolate()->ThrowError("should be unreachable from wasm");
+   }
+ 
++  static void AssertIsExternal(const FunctionCallbackInfo<Value>& args) {
++    FastCApiObject* self = UnwrapObject(args.This());
++    CHECK_SELF_OR_THROW();
++
++    Local<Value> value = args[0];
++
++    if (!value->IsExternal()) {
++      args.GetIsolate()->ThrowError("Did not get an external.");
++    }
++  }
++
++  static void* GetPointerFastCallback(Local<Object> receiver,
++                                      FastApiCallbackOptions& options) {
++    FastCApiObject* self = UnwrapObject(receiver);
++    CHECK_SELF_OR_FALLBACK(nullptr);
++    self->fast_call_count_++;
++
++    return static_cast<void*>(self);
++  }
++
++  static void GetPointerSlowCallback(const FunctionCallbackInfo<Value>& args) {
++    Isolate* isolate = args.GetIsolate();
++    FastCApiObject* self = UnwrapObject(args.This());
++    CHECK_SELF_OR_THROW();
++    self->slow_call_count_++;
++
++    args.GetReturnValue().Set(External::New(isolate, static_cast<void*>(self)));
++  }
++
++  static void* GetNullPointerFastCallback(Local<Object> receiver,
++                                          FastApiCallbackOptions& options) {
++    FastCApiObject* self = UnwrapObject(receiver);
++    CHECK_SELF_OR_FALLBACK(nullptr);
++    self->fast_call_count_++;
++
++    return nullptr;
++  }
++
++  static void GetNullPointerSlowCallback(
++      const FunctionCallbackInfo<Value>& args) {
++    Isolate* isolate = args.GetIsolate();
++    FastCApiObject* self = UnwrapObject(args.This());
++    CHECK_SELF_OR_THROW();
++    self->slow_call_count_++;
++
++    args.GetReturnValue().Set(v8::Null(isolate));
++  }
++
++  static void* PassPointerFastCallback(Local<Object> receiver, void* pointer,
++                                       FastApiCallbackOptions& options) {
++    FastCApiObject* self = UnwrapObject(receiver);
++    CHECK_SELF_OR_FALLBACK(nullptr);
++    self->fast_call_count_++;
++
++    return pointer;
++  }
++
++  static void PassPointerSlowCallback(const FunctionCallbackInfo<Value>& args) {
++    FastCApiObject* self = UnwrapObject(args.This());
++    CHECK_SELF_OR_THROW();
++    self->slow_call_count_++;
++
++    if (args.Length() != 1) {
++      args.GetIsolate()->ThrowError(
++          "Invalid number of arguments, expected one.");
++      return;
++    }
++
++    Local<Value> maybe_external = args[0].As<Value>();
++
++    if (maybe_external->IsNull()) {
++      args.GetReturnValue().Set(maybe_external);
++      return;
++    }
++    if (!maybe_external->IsExternal()) {
++      args.GetIsolate()->ThrowError("Did not get an external.");
++      return;
++    }
++
++    Local<External> external = args[0].As<External>();
++
++    args.GetReturnValue().Set(external);
++  }
++
++  static bool ComparePointersFastCallback(Local<Object> receiver,
++                                          void* pointer_a, void* pointer_b,
++                                          FastApiCallbackOptions& options) {
++    FastCApiObject* self = UnwrapObject(receiver);
++    CHECK_SELF_OR_FALLBACK(false);
++    self->fast_call_count_++;
++
++    return pointer_a == pointer_b;
++  }
++
++  static void ComparePointersSlowCallback(
++      const FunctionCallbackInfo<Value>& args) {
++    FastCApiObject* self = UnwrapObject(args.This());
++    CHECK_SELF_OR_THROW();
++    self->slow_call_count_++;
++
++    if (args.Length() != 2) {
++      args.GetIsolate()->ThrowError(
++          "Invalid number of arguments, expected two.");
++      return;
++    }
++
++    Local<Value> value_a = args[0];
++    Local<Value> value_b = args[1];
++
++    void* pointer_a;
++    if (value_a->IsNull()) {
++      pointer_a = nullptr;
++    } else {
++      pointer_a = value_a.As<External>()->Value();
++    }
++
++    void* pointer_b;
++    if (value_b->IsNull()) {
++      pointer_b = nullptr;
++    } else {
++      pointer_b = value_b.As<External>()->Value();
++    }
++
++    args.GetReturnValue().Set(pointer_a == pointer_b);
++  }
++
+   static void FastCallCount(const FunctionCallbackInfo<Value>& args) {
+     FastCApiObject* self = UnwrapObject(args.This());
+     CHECK_SELF_OR_THROW();
+@@ -1465,6 +1591,46 @@
+             SideEffectType::kHasSideEffect, &test_wasm_memory_c_func));
+ 
+     api_obj_ctor->PrototypeTemplate()->Set(
++        isolate, "assert_is_external",
++        FunctionTemplate::New(isolate, FastCApiObject::AssertIsExternal,
++                              Local<Value>(), signature, 1,
++                              ConstructorBehavior::kThrow,
++                              SideEffectType::kHasSideEffect, nullptr));
++
++    CFunction get_pointer_c_func =
++        CFunction::Make(FastCApiObject::GetPointerFastCallback);
++    api_obj_ctor->PrototypeTemplate()->Set(
++        isolate, "get_pointer",
++        FunctionTemplate::New(
++            isolate, FastCApiObject::GetPointerSlowCallback, Local<Value>(),
++            signature, 1, ConstructorBehavior::kThrow,
++            SideEffectType::kHasSideEffect, &get_pointer_c_func));
++    CFunction get_null_pointer_c_func =
++        CFunction::Make(FastCApiObject::GetNullPointerFastCallback);
++    api_obj_ctor->PrototypeTemplate()->Set(
++        isolate, "get_null_pointer",
++        FunctionTemplate::New(
++            isolate, FastCApiObject::GetNullPointerSlowCallback, Local<Value>(),
++            signature, 1, ConstructorBehavior::kThrow,
++            SideEffectType::kHasSideEffect, &get_null_pointer_c_func));
++    CFunction pass_pointer_c_func =
++        CFunction::Make(FastCApiObject::PassPointerFastCallback);
++    api_obj_ctor->PrototypeTemplate()->Set(
++        isolate, "pass_pointer",
++        FunctionTemplate::New(
++            isolate, FastCApiObject::PassPointerSlowCallback, Local<Value>(),
++            signature, 1, ConstructorBehavior::kThrow,
++            SideEffectType::kHasSideEffect, &pass_pointer_c_func));
++    CFunction compare_pointers_c_func =
++        CFunction::Make(FastCApiObject::ComparePointersFastCallback);
++    api_obj_ctor->PrototypeTemplate()->Set(
++        isolate, "compare_pointers",
++        FunctionTemplate::New(
++            isolate, FastCApiObject::ComparePointersSlowCallback,
++            Local<Value>(), signature, 1, ConstructorBehavior::kThrow,
++            SideEffectType::kHasSideEffect, &compare_pointers_c_func));
++
++    api_obj_ctor->PrototypeTemplate()->Set(
+         isolate, "fast_call_count",
+         FunctionTemplate::New(
+             isolate, FastCApiObject::FastCallCount, Local<Value>(), signature,
+diff --git a/test/mjsunit/compiler/fast-api-calls-pointer.js b/test/mjsunit/compiler/fast-api-calls-pointer.js
+new file mode 100644
+index 0000000..889e65d
+--- /dev/null
++++ b/test/mjsunit/compiler/fast-api-calls-pointer.js
+@@ -0,0 +1,136 @@
++// Copyright 2022 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// This file excercises basic fast API calls and enables fuzzing of this
++// functionality.
++
++// Flags: --turbo-fast-api-calls --expose-fast-api --allow-natives-syntax --turbofan
++// --always-turbofan is disabled because we rely on particular feedback for
++// optimizing to the fastest path.
++// Flags: --no-always-turbofan
++// The test relies on optimizing/deoptimizing at predictable moments, so
++// it's not suitable for deoptimization fuzzing.
++// Flags: --deopt-every-n-times=0
++
++assertThrows(() => d8.test.FastCAPI());
++const fast_c_api = new d8.test.FastCAPI();
++
++// ---------- Test external pointer passing -----------
++
++function reset_counts() {
++  return fast_c_api.reset_counts();
++}
++
++function fast_call_count() {
++  return fast_c_api.fast_call_count();
++}
++
++function slow_call_count() {
++  return fast_c_api.slow_call_count();
++}
++
++function assertIsExternal(pointer) {
++  return fast_c_api.assert_is_external(pointer);
++}
++
++function get_pointer_a() {
++  return fast_c_api.get_pointer();
++}
++
++function get_pointer_b() {
++  return fast_c_api.get_null_pointer();
++}
++
++function pass_pointer(pointer) {
++  return fast_c_api.pass_pointer(pointer);
++}
++
++function compare_pointers(pointer_a, pointer_b) {
++  return fast_c_api.compare_pointers(pointer_a, pointer_b);
++}
++
++%PrepareFunctionForOptimization(get_pointer_a);
++reset_counts();
++const external_a_slow = get_pointer_a();
++const external_a_slow_clone = get_pointer_a();
++assertEquals(slow_call_count(), 2);
++assertEquals(fast_call_count(), 0);
++assertIsExternal(external_a_slow);
++assertIsExternal(external_a_slow_clone);
++
++// Slow call that returns the same pointer from a new `External::New()`
++// will still create a new / different object.
++// Note that we cannot use `assertEquals(external_a_slow, external_a_slow_clone)`
++// as it's a deep equality comparison and will return true for all empty object comparsions.
++assertFalse(external_a_slow === external_a_slow_clone);
++
++%PrepareFunctionForOptimization(pass_pointer);
++reset_counts();
++const external_a_slow_passed = pass_pointer(external_a_slow);
++// If slow call returns the same External object, then object identity is
++// preserved.
++assertEquals(slow_call_count(), 1);
++assertEquals(fast_call_count(), 0);
++assertTrue(external_a_slow_passed === external_a_slow, true);
++%OptimizeFunctionOnNextCall(pass_pointer);
++const external_a_fast_passed = pass_pointer(external_a_slow);
++assertEquals(slow_call_count(), 1);
++assertEquals(fast_call_count(), 1);
++assertIsExternal(external_a_slow);
++assertIsExternal(external_a_fast_passed);
++// Fast call always creates a new External object, as they cannot
++// return the same External object given that they do not see it.
++assertFalse(external_a_fast_passed === external_a_slow);
++
++// An object that looks like an External is still not an External.
++const emptyObject = Object.create(null);
++// An object that internally carries a pointer is still not an External.
++const alsoInternallyPointer = new Uint8Array();
++assertThrows(() => pass_pointer(emptyObject));
++assertThrows(() => pass_pointer(alsoInternallyPointer));
++
++// Show off deep equality comparsions between various External objects and
++// the empty object to show that all Externals work properly as objects.
++assertEquals(external_a_slow, external_a_fast_passed);
++assertEquals(external_a_fast_passed, emptyObject);
++
++%OptimizeFunctionOnNextCall(get_pointer_a);
++reset_counts();
++const external_a_fast = get_pointer_a();
++assertEquals(slow_call_count(), 0);
++assertEquals(fast_call_count(), 1);
++assertIsExternal(external_a_fast);
++assertFalse(external_a_fast === external_a_slow);
++
++%PrepareFunctionForOptimization(get_pointer_b);
++fast_c_api.reset_counts();
++const external_b_slow = get_pointer_b();
++assertEquals(slow_call_count(), 1);
++assertEquals(fast_call_count(), 0);
++assertEquals(external_b_slow, null);
++%OptimizeFunctionOnNextCall(get_pointer_b);
++const external_b_fast = get_pointer_b();
++assertEquals(slow_call_count(), 1);
++assertEquals(fast_call_count(), 1);
++assertEquals(external_b_fast, null);
++
++const external_b_fast_passed = pass_pointer(external_b_slow);
++assertEquals(external_b_fast_passed, null);
++assertTrue(external_b_fast_passed === external_b_slow, true);
++
++%PrepareFunctionForOptimization(compare_pointers);
++assertUnoptimized(compare_pointers);
++reset_counts();
++assertFalse(compare_pointers(external_a_slow, external_b_slow));
++assertEquals(slow_call_count(), 1);
++assertEquals(fast_call_count(), 0);
++%OptimizeFunctionOnNextCall(compare_pointers);
++assertFalse(compare_pointers(external_a_slow, external_b_slow));
++assertEquals(slow_call_count(), 1);
++assertEquals(fast_call_count(), 1);
++assertTrue(compare_pointers(external_a_slow, external_a_slow), true);
++assertTrue(compare_pointers(external_a_slow, external_a_fast), true);
++assertTrue(compare_pointers(external_b_slow, external_b_slow), true);
++assertTrue(compare_pointers(external_b_slow, external_b_fast), true);
++assertTrue(compare_pointers(external_b_slow, external_b_fast_passed), true);
