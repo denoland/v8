@@ -1,4 +1,4 @@
-From 38618d3875ccc63df942057fbe4a761cf931ba62 Mon Sep 17 00:00:00 2001
+From 11de73d7d9826ce0c3ffc0f561b4ca6e0453d011 Mon Sep 17 00:00:00 2001
 From: Ryan Dahl <ry@tinyclouds.org>
 Date: Thu, 10 Jun 2021 09:05:57 -0400
 Subject: [PATCH 1/4] Revert "[test] Import v8.gni to googletest and fix its
@@ -55,5 +55,5 @@ index bc82c635da..0918a49606 100644
      ":gmock_config",
      ":gtest_config",
 -- 
-2.33.0
+2.37.3
 

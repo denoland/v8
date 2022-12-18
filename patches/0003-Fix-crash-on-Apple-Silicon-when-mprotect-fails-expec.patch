@@ -1,4 +1,4 @@
-From 308f0cd7a4a227f00da010f643863529a67781b5 Mon Sep 17 00:00:00 2001
+From 183144148764c4288d63639ff0a7f46e18203fa7 Mon Sep 17 00:00:00 2001
 From: Bert Belder <bertbelder@gmail.com>
 Date: Wed, 25 May 2022 20:40:04 +0200
 Subject: [PATCH 3/4] Fix crash on Apple Silicon when mprotect() fails
@@ -9,10 +9,10 @@ Subject: [PATCH 3/4] Fix crash on Apple Silicon when mprotect() fails
  1 file changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/src/base/platform/platform-posix.cc b/src/base/platform/platform-posix.cc
-index 0c1c9d08f0..5c248b1a17 100644
+index d37b6219d4..ed97299d0b 100644
 --- a/src/base/platform/platform-posix.cc
 +++ b/src/base/platform/platform-posix.cc
-@@ -472,11 +472,6 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
+@@ -479,11 +479,6 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
    int prot = GetProtectionFromMemoryPermission(access);
    int ret = mprotect(address, size, prot);
  
@@ -24,7 +24,7 @@ index 0c1c9d08f0..5c248b1a17 100644
    // MacOS 11.2 on Apple Silicon refuses to switch permissions from
    // rwx to none. Just use madvise instead.
  #if defined(V8_OS_DARWIN)
-@@ -486,6 +481,11 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
+@@ -493,6 +488,11 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
    }
  #endif
  
@@ -37,5 +37,5 @@ index 0c1c9d08f0..5c248b1a17 100644
      // This is advisory; ignore errors and continue execution.
      USE(DiscardSystemPages(address, size));
 -- 
-2.33.0
+2.37.3
 
