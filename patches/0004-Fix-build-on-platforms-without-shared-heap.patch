@@ -1,0 +1,34 @@
+From 50104f7cf6f13dc8f2e3911ac759d8468be4eef6 Mon Sep 17 00:00:00 2001
+From: Milad Fa <mfarazma@redhat.com>
+Date: Thu, 15 Dec 2022 10:44:36 -0500
+Subject: [PATCH 5/5] [heap] Fix build on platforms without shared heap
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Bug: v8:13267, chromium:1400048
+Change-Id: I562996384632e6e2568548fcabc1c05c48b9335a
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/4111940
+Reviewed-by: Dominik Inführ <dinfuehr@chromium.org>
+Commit-Queue: Milad Farazmand <mfarazma@redhat.com>
+Cr-Commit-Position: refs/heads/main@{#84883}
+---
+ src/heap/heap-verifier.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/heap/heap-verifier.cc b/src/heap/heap-verifier.cc
+index d1f2e7e748..da05e2b700 100644
+--- a/src/heap/heap-verifier.cc
++++ b/src/heap/heap-verifier.cc
+@@ -351,7 +351,7 @@ void HeapVerification::VerifyPage(const BasicMemoryChunk* chunk) {
+   CHECK(!chunk->IsFlagSet(Page::PAGE_NEW_OLD_PROMOTION));
+   CHECK(!chunk->IsFlagSet(Page::PAGE_NEW_NEW_PROMOTION));
+   CHECK(!chunk->IsFlagSet(Page::SHARED_HEAP_PROMOTION));
+-  if (chunk->InReadOnlySpace()) {
++  if (V8_SHARED_RO_HEAP_BOOL && chunk->InReadOnlySpace()) {
+     CHECK_NULL(chunk->owner());
+   } else {
+     CHECK_EQ(chunk->heap(), heap());
+-- 
+2.39.0
+
