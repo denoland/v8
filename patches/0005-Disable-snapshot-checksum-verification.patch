@@ -1,0 +1,24 @@
+From 9866c9aea05f9215e6c91cc8d7dd780d706e8286 Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Thu, 9 Mar 2023 17:18:38 +0530
+Subject: [PATCH] Disable snapshot checksum verification
+
+---
+ src/snapshot/mksnapshot.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/snapshot/mksnapshot.cc b/src/snapshot/mksnapshot.cc
+index ef606e87e1..949e9bafbd 100644
+--- a/src/snapshot/mksnapshot.cc
++++ b/src/snapshot/mksnapshot.cc
+@@ -88,7 +88,7 @@ class SnapshotFileWriter {
+     fprintf(
+         fp,
+         "bool Snapshot::ShouldVerifyChecksum(const v8::StartupData* data) {\n");
+-    fprintf(fp, "  return true;\n");
++    fprintf(fp, "  return false;\n");
+     fprintf(fp, "}\n");
+     fprintf(fp, "}  // namespace internal\n");
+     fprintf(fp, "}  // namespace v8\n");
+--
+2.37.1 (Apple Git-137.1)
