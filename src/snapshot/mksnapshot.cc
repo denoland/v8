@@ -89,7 +89,7 @@ class SnapshotFileWriter {
     fprintf(
         fp,
         "bool Snapshot::ShouldVerifyChecksum(const v8::StartupData* data) {\n");
-    fprintf(fp, "  return true;\n");
+    fprintf(fp, "  return false;\n");
     fprintf(fp, "}\n");
     fprintf(fp, "}  // namespace internal\n");
     fprintf(fp, "}  // namespace v8\n");
