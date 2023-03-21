@@ -1,5 +1,5 @@
 const V8_VERSIONS = [
-  "11.0",
+  "11.2",
 ];
 
 // Extract the V8 version from the include/v8-version.h file.
