@@ -25,8 +25,7 @@ index 4edf364e0a..29b903ff78 100644
 +base::LazyMutex init_unwind_info_mutex_ = LAZY_MUTEX_INITIALIZER;
 +#endif  // V8_OS_WIN64
 +
- Isolate::Isolate(std::unique_ptr<i::IsolateAllocator> isolate_allocator,
-                  bool is_shared)
+ Isolate::Isolate(std::unique_ptr<i::IsolateAllocator> isolate_allocator)
      : isolate_data_(this, isolate_allocator->GetPtrComprCageBase()),
 @@ -3566,11 +3570,13 @@ void Isolate::Deinit() {
  
