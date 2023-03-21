@@ -14,10 +14,10 @@ Upstream bug: https://bugs.chromium.org/p/v8/issues/detail?id=12393
  1 file changed, 19 insertions(+), 11 deletions(-)
 
 diff --git a/src/execution/isolate.cc b/src/execution/isolate.cc
-index 4edf364e0a..29b903ff78 100644
+index 1c6c464dd6..732be61953 100644
 --- a/src/execution/isolate.cc
 +++ b/src/execution/isolate.cc
-@@ -3433,6 +3433,10 @@ v8::PageAllocator* Isolate::page_allocator() const {
+@@ -3352,6 +3352,10 @@ v8::PageAllocator* Isolate::page_allocator() const {
    return isolate_allocator_->page_allocator();
  }
  
@@ -27,7 +27,8 @@ index 4edf364e0a..29b903ff78 100644
 +
  Isolate::Isolate(std::unique_ptr<i::IsolateAllocator> isolate_allocator)
      : isolate_data_(this, isolate_allocator->GetPtrComprCageBase()),
-@@ -3566,11 +3570,13 @@ void Isolate::Deinit() {
+       isolate_allocator_(std::move(isolate_allocator)),
+@@ -3494,11 +3498,13 @@ void Isolate::Deinit() {
  
  #if defined(V8_OS_WIN64)
    if (win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange() &&
@@ -46,7 +47,7 @@ index 4edf364e0a..29b903ff78 100644
    }
  #endif  // V8_OS_WIN64
  
-@@ -4598,12 +4604,14 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
+@@ -4476,12 +4482,14 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
    }
  
  #if defined(V8_OS_WIN64)
@@ -68,5 +69,4 @@ index 4edf364e0a..29b903ff78 100644
  #endif  // V8_OS_WIN64
  
 -- 
-2.37.3
-
+2.37.1 (Apple Git-137.1)
