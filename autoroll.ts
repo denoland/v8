@@ -130,6 +130,8 @@ for (const version of V8_VERSIONS) {
   const patches = [...Deno.readDirSync("./patches")]
     .map((x) => `../patches/${x.name}`);
 
+  patches.sort();
+  
   for (const patch of patches) {
     // Apply the patch file.
     console.log(`Applying patch ${patch}`);
