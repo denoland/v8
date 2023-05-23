@@ -17,7 +17,7 @@ branches, except with the patches from the `patches/` directory applied.
 
 Currently the following V8 branches are actively updated:
 
-- `11.4-lkgr-denoland`
+- `11.5-lkgr-denoland`
 
 ## Contributing
 
