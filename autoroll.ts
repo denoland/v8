@@ -24,12 +24,12 @@ function extractVersion(versionDotH: string) {
 
 // This function runs a specified subcommand and waits until the command exits
 // with code 0.
-async function run(cmd: string[], cwd: string = "./v8") {
-  console.log("$", ...cmd);
-  const proc = Deno.run({ cmd, cwd });
-  const status = await proc.status();
-  if (!status.success) {
-    console.error(`Failed to run ${cmd.join(" ")}`);
+async function run(cmd: string, args: string[], cwd: string = "./v8") {
+  console.log("$", cmd, ...args);
+  const command = new Deno.Command(cmd, { args, cwd });
+  const output = await command.output();
+  if (!output.success) {
+    console.error(`Failed to run ${cmd} ${args.join(" ")}`);
     Deno.exit(1);
   }
 }
@@ -37,17 +37,18 @@ async function run(cmd: string[], cwd: string = "./v8") {
 // This function runs a specified subcommand and waits until the command exits
 // with code 0.
 async function runAndCollect(
-  cmd: string[],
+  cmd: string,
+  args: string[],
   cwd: string = "./v8",
 ): Promise<Uint8Array> {
-  console.log("$", ...cmd);
-  const proc = Deno.run({ cmd, cwd, stdout: "piped" });
-  const status = await proc.status();
-  if (!status.success) {
-    console.error(`Failed to run ${cmd.join(" ")}`);
+  console.log("$", cmd, ...args);
+  const command = new Deno.Command(cmd, { args, cwd, stdout: "piped" });
+  const output = await command.output();
+  if (!output.success) {
+    console.error(`Failed to run ${cmd} ${args.join(" ")}`);
     Deno.exit(1);
   }
-  return await proc.output();
+  return output.stdout;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -61,16 +62,14 @@ async function pathExists(path: string): Promise<boolean> {
 
 if (!await pathExists("./v8/.git")) {
   console.log("Cloning V8. This might take a couple of minutes.");
-  await run([
-    "git",
+  await run("git", [
     "clone",
     "https://chromium.googlesource.com/v8/v8.git",
     "v8",
   ], ".");
 
   console.log("Configuring denoland remote.");
-  await run([
-    "git",
+  await run("git", [
     "remote",
     "add",
     "denoland",
@@ -79,7 +78,7 @@ if (!await pathExists("./v8/.git")) {
 }
 
 console.log("Fetching denoland remote.");
-await run(["git", "fetch", "denoland"]);
+await run("git", ["fetch", "denoland"]);
 
 for (const version of V8_VERSIONS) {
   const UPSTREAM_LKGR = `${version}-lkgr`;
@@ -102,8 +101,7 @@ for (const version of V8_VERSIONS) {
 
   // Create a $V8_VERSION-lkgr-denoland branch from the upstream
   // $V8_VERSION-lkgr branch.
-  await run([
-    "git",
+  await run("git", [
     "checkout",
     "-b",
     DENOLAND_LKGR,
@@ -131,27 +129,27 @@ for (const version of V8_VERSIONS) {
     .map((x) => `../patches/${x.name}`);
 
   patches.sort();
-  
+
   for (const patch of patches) {
     // Apply the patch file.
     console.log(`Applying patch ${patch}`);
-    await run(["git", "am", "-3", patch]);
+    await run("git", ["am", "-3", patch]);
   }
 
   // Force push the branch to the denoland remote.
   console.log("Pushing the branch to the remote. This might take a minute.");
-  await run(["git", "push", "--force", "denoland", DENOLAND_LKGR]);
+  await run("git", ["push", "--force", "denoland", DENOLAND_LKGR]);
 
   // Get the current commit.
-  const commit = await runAndCollect(["git", "rev-parse", DENOLAND_LKGR]);
+  const commit = await runAndCollect("git", ["rev-parse", DENOLAND_LKGR]);
   const currentCommit = new TextDecoder().decode(commit).trim();
 
   // Create a tag for the new version.
   const TAG = `${upstreamVersion}-denoland-${currentCommit.slice(0, 20)}`;
   console.log(`Creating tag ${TAG}`);
-  await run(["git", "tag", TAG]);
+  await run("git", ["tag", TAG]);
 
   // Push the tag to the denoland remote.
   console.log("Pushing the tag to the remote.");
-  await run(["git", "push", "denoland", TAG]);
+  await run("git", ["push", "denoland", TAG]);
 }
