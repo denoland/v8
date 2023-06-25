@@ -111,14 +111,14 @@ for (const version of V8_VERSIONS) {
   const versionDotH = await Deno.readTextFile("./v8/include/v8-version.h");
   const upstreamVersion = extractVersion(versionDotH);
 
-  // // If the upstream version does not match the current version, then we need to
-  // // roll.
-  // if (upstreamVersion === currentVersion) {
-  //   console.log(
-  //     `Upstream version ${upstreamVersion} matches current version ${currentVersion}. No need to roll ${UPSTREAM_LKGR}.`,
-  //   );
-  //   continue;
-  // }
+  // If the upstream version does not match the current version, then we need to
+  // roll.
+  if (upstreamVersion === currentVersion) {
+    console.log(
+      `Upstream version ${upstreamVersion} matches current version ${currentVersion}. No need to roll ${UPSTREAM_LKGR}.`,
+    );
+    continue;
+  }
 
   console.log(
     `Upstream version ${upstreamVersion} does not match current version ${currentVersion}. Rolling ${UPSTREAM_LKGR}...`,
@@ -137,19 +137,19 @@ for (const version of V8_VERSIONS) {
   }
 
   // Force push the branch to the denoland remote.
-  // console.log("Pushing the branch to the remote. This might take a minute.");
-  // await run("git", ["push", "--force", "denoland", DENOLAND_LKGR]);
+  console.log("Pushing the branch to the remote. This might take a minute.");
+  await run("git", ["push", "--force", "denoland", DENOLAND_LKGR]);
 
-  // // Get the current commit.
-  // const commit = await runAndCollect("git", ["rev-parse", DENOLAND_LKGR]);
-  // const currentCommit = new TextDecoder().decode(commit).trim();
+  // Get the current commit.
+  const commit = await runAndCollect("git", ["rev-parse", DENOLAND_LKGR]);
+  const currentCommit = new TextDecoder().decode(commit).trim();
 
-  // // Create a tag for the new version.
-  // const TAG = `${upstreamVersion}-denoland-${currentCommit.slice(0, 20)}`;
-  // console.log(`Creating tag ${TAG}`);
-  // await run("git", ["tag", TAG]);
+  // Create a tag for the new version.
+  const TAG = `${upstreamVersion}-denoland-${currentCommit.slice(0, 20)}`;
+  console.log(`Creating tag ${TAG}`);
+  await run("git", ["tag", TAG]);
 
-  // // Push the tag to the denoland remote.
-  // console.log("Pushing the tag to the remote.");
-  // await run("git", ["push", "denoland", TAG]);
+  // Push the tag to the denoland remote.
+  console.log("Pushing the tag to the remote.");
+  await run("git", ["push", "denoland", TAG]);
 }
