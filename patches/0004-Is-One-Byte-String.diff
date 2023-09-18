@@ -1,0 +1,55 @@
+diff --git a/src/builtins/builtins-definitions.h b/src/builtins/builtins-definitions.h
+index 18da8a651b..16a4720b9a 100644
+--- a/src/builtins/builtins-definitions.h
++++ b/src/builtins/builtins-definitions.h
+@@ -966,6 +966,7 @@ namespace internal {
+   TFJ(StringPrototypeSplit, kDontAdaptArgumentsSentinel)                       \
+   /* ES6 #sec-string.raw */                                                    \
+   CPP(StringRaw)                                                               \
++  TFJ(StringIsOneByte, kDontAdaptArgumentsSentinel)                            \
+                                                                                \
+   /* Symbol */                                                                 \
+   /* ES #sec-symbol-constructor */                                             \
+diff --git a/src/builtins/builtins-string-gen.cc b/src/builtins/builtins-string-gen.cc
+index 85035f3ef5..1d530ca958 100644
+--- a/src/builtins/builtins-string-gen.cc
++++ b/src/builtins/builtins-string-gen.cc
+@@ -684,6 +684,24 @@ TF_BUILTIN(SubString, StringBuiltinsAssembler) {
+   Return(SubString(string, SmiUntag(from), SmiUntag(to)));
+ }
+ 
++TF_BUILTIN(StringIsOneByte, StringBuiltinsAssembler) {
++  const TNode<IntPtrT> argc = ChangeInt32ToIntPtr(
++      UncheckedParameter<Int32T>(Descriptor::kJSActualArgumentsCount));
++  CodeStubArguments args(this, argc);
++
++  const TNode<Object> string = args.GetOptionalArgumentValue(0);
++  
++  Label is_onebyte(this);
++
++  TNode<Uint16T> instance_type = LoadInstanceType(CAST(string));
++
++  GotoIf(IsOneByteStringInstanceType(instance_type), &is_onebyte);
++  args.PopAndReturn(FalseConstant());
++
++  BIND(&is_onebyte); 
++  args.PopAndReturn(TrueConstant());
++}
++
+ void StringBuiltinsAssembler::GenerateStringRelationalComparison(
+     TNode<String> left, TNode<String> right, StringComparison op) {
+   TVARIABLE(String, var_left, left);
+diff --git a/src/init/bootstrapper.cc b/src/init/bootstrapper.cc
+index 2beaf45b14..cb5e96a0c7 100644
+--- a/src/init/bootstrapper.cc
++++ b/src/init/bootstrapper.cc
+@@ -3443,6 +3443,9 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
+     JSObject::AddProperty(isolate_, prototype, factory->iterator_symbol(),
+                           values, DONT_ENUM);
+ 
++    SimpleInstallFunction(isolate_, global, "isOneByte",
++                          Builtin::kStringIsOneByte, 1, false);
++
+     // TODO(caitp): alphasort accessors/methods
+     SimpleInstallFunction(isolate_, prototype, "at",
+                           Builtin::kTypedArrayPrototypeAt, 1, true);
