@@ -1,0 +1,81 @@
+diff --git a/src/builtins/builtins-definitions.h b/src/builtins/builtins-definitions.h
+index 18da8a651b..e694e548f3 100644
+--- a/src/builtins/builtins-definitions.h
++++ b/src/builtins/builtins-definitions.h
+@@ -951,6 +951,7 @@ namespace internal {
+   /* String */                                                                 \
+   /* ES #sec-string.fromcodepoint */                                           \
+   CPP(StringFromCodePoint)                                                     \
++  CPP(StringToUtf8)                                                            \
+   /* ES6 #sec-string.fromcharcode */                                           \
+   TFJ(StringFromCharCode, kDontAdaptArgumentsSentinel)                         \
+   /* ES6 #sec-string.prototype.lastindexof */                                  \
+diff --git a/src/builtins/builtins-string.cc b/src/builtins/builtins-string.cc
+index db193bdf8b..dd3ba322d1 100644
+--- a/src/builtins/builtins-string.cc
++++ b/src/builtins/builtins-string.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "src/api/api-inl.h"
+ #include "src/builtins/builtins-utils-inl.h"
+ #include "src/builtins/builtins.h"
+ #include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
+@@ -131,6 +132,42 @@ BUILTIN(StringPrototypeLastIndexOf) {
+                              args.atOrUndefined(isolate, 2));
+ }
+ 
++void Deleter(void* data, size_t _len, void* _info) {
++  delete[] static_cast<uint8_t*>(data);
++}
++
++BUILTIN(StringToUtf8) {
++  HandleScope scope(isolate);
++
++  Handle<String> string;
++  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, string,
++                                     Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
++
++  string = String::Flatten(isolate, string);
++
++  size_t len;
++  uint8_t* buf_;
++  std::unique_ptr<uint8_t[]> allocated_;
++
++  Local<v8::String> local = v8::Utils::ToLocal(string);
++  auto* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
++  len = local->Utf8Length(v8_isolate);
++
++  allocated_ = std::make_unique<uint8_t[]>(len);
++  buf_ = allocated_.release();
++
++  if (len > 0) {
++    local->WriteUtf8(v8_isolate, reinterpret_cast<char*>(buf_));
++  }
++
++  std::unique_ptr<BackingStore> memory = BackingStore::WrapAllocation(
++      buf_, len,
++      Deleter, nullptr, SharedFlag::kNotShared);
++  Handle<JSArrayBuffer> new_buffer = isolate->factory()->NewJSArrayBuffer(std::move(memory));
++
++  return *new_buffer;
++}
++
+ // ES6 section 21.1.3.10 String.prototype.localeCompare ( that )
+ //
+ // This function is implementation specific.  For now, we do not
+diff --git a/src/init/bootstrapper.cc b/src/init/bootstrapper.cc
+index 2beaf45b14..6a4bf6cebe 100644
+--- a/src/init/bootstrapper.cc
++++ b/src/init/bootstrapper.cc
+@@ -3443,6 +3443,9 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
+     JSObject::AddProperty(isolate_, prototype, factory->iterator_symbol(),
+                           values, DONT_ENUM);
+ 
++    SimpleInstallFunction(isolate_, global, "toUtf8",
++                          Builtin::kStringToUtf8, 1, false);
++
+     // TODO(caitp): alphasort accessors/methods
+     SimpleInstallFunction(isolate_, prototype, "at",
+                           Builtin::kTypedArrayPrototypeAt, 1, true);
