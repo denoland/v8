@@ -966,6 +966,7 @@ namespace internal {
   TFJ(StringPrototypeSplit, kDontAdaptArgumentsSentinel)                       \
   /* ES6 #sec-string.raw */                                                    \
   CPP(StringRaw)                                                               \
+  TFJ(StringIsOneByte, kDontAdaptArgumentsSentinel)                            \
                                                                                \
   /* Symbol */                                                                 \
   /* ES #sec-symbol-constructor */                                             \
