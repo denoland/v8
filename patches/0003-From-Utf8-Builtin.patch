@@ -1,3 +1,14 @@
+From dc5fd54b56f2de68d945a996d9b611231843e49c Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Tue, 26 Sep 2023 18:06:49 +0530
+Subject: [PATCH 3/5] Add `fromUtf8` builtin
+
+---
+ src/builtins/builtins-definitions.h  |  1 +
+ src/builtins/builtins-typed-array.cc | 30 ++++++++++++++++++++++++++++
+ src/init/bootstrapper.cc             |  5 +++++
+ 3 files changed, 36 insertions(+)
+
 diff --git a/src/builtins/builtins-definitions.h b/src/builtins/builtins-definitions.h
 index 18da8a651b..3d33e33cb6 100644
 --- a/src/builtins/builtins-definitions.h
@@ -67,3 +78,5 @@ index 2beaf45b14..aa4386ec66 100644
      SimpleInstallFunction(isolate_, prototype, "copyWithin",
                            Builtin::kTypedArrayPrototypeCopyWithin, 2, false);
      SimpleInstallFunction(isolate_, prototype, "every",
+-- 
+2.37.1 (Apple Git-137.1)

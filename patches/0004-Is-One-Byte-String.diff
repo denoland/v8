@@ -1,5 +1,16 @@
+From 9790e4ae517e3c8e416f389714d53e5db5ccc237 Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Tue, 26 Sep 2023 18:07:36 +0530
+Subject: [PATCH 4/5] Add `isOneByte` TF builtin
+
+---
+ src/builtins/builtins-definitions.h |  1 +
+ src/builtins/builtins-string-gen.cc | 18 ++++++++++++++++++
+ src/init/bootstrapper.cc            |  3 +++
+ 3 files changed, 22 insertions(+)
+
 diff --git a/src/builtins/builtins-definitions.h b/src/builtins/builtins-definitions.h
-index 18da8a651b..16a4720b9a 100644
+index 3d33e33cb6..58c000c62e 100644
 --- a/src/builtins/builtins-definitions.h
 +++ b/src/builtins/builtins-definitions.h
 @@ -966,6 +966,7 @@ namespace internal {
@@ -40,7 +51,7 @@ index 85035f3ef5..1d530ca958 100644
      TNode<String> left, TNode<String> right, StringComparison op) {
    TVARIABLE(String, var_left, left);
 diff --git a/src/init/bootstrapper.cc b/src/init/bootstrapper.cc
-index 2beaf45b14..cb5e96a0c7 100644
+index aa4386ec66..005c57a863 100644
 --- a/src/init/bootstrapper.cc
 +++ b/src/init/bootstrapper.cc
 @@ -3443,6 +3443,9 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
@@ -53,3 +64,5 @@ index 2beaf45b14..cb5e96a0c7 100644
      // TODO(caitp): alphasort accessors/methods
      SimpleInstallFunction(isolate_, prototype, "at",
                            Builtin::kTypedArrayPrototypeAt, 1, true);
+-- 
+2.37.1 (Apple Git-137.1)

@@ -1,5 +1,16 @@
+From d4b2303c7907d100a1fe885cc48cb90df344a622 Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Tue, 26 Sep 2023 18:40:55 +0530
+Subject: [PATCH 5/5] Add `toUtf8` builtin
+
+---
+ src/builtins/builtins-definitions.h |  1 +
+ src/builtins/builtins-string.cc     | 37 +++++++++++++++++++++++++++++
+ src/init/bootstrapper.cc            |  2 ++
+ 3 files changed, 40 insertions(+)
+
 diff --git a/src/builtins/builtins-definitions.h b/src/builtins/builtins-definitions.h
-index 18da8a651b..e694e548f3 100644
+index 58c000c62e..a664490b26 100644
 --- a/src/builtins/builtins-definitions.h
 +++ b/src/builtins/builtins-definitions.h
 @@ -951,6 +951,7 @@ namespace internal {
@@ -66,16 +77,17 @@ index db193bdf8b..dd3ba322d1 100644
  //
  // This function is implementation specific.  For now, we do not
 diff --git a/src/init/bootstrapper.cc b/src/init/bootstrapper.cc
-index 2beaf45b14..6a4bf6cebe 100644
+index 005c57a863..69633a9966 100644
 --- a/src/init/bootstrapper.cc
 +++ b/src/init/bootstrapper.cc
-@@ -3443,6 +3443,9 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
-     JSObject::AddProperty(isolate_, prototype, factory->iterator_symbol(),
-                           values, DONT_ENUM);
- 
+@@ -3453,6 +3453,8 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
+     // Deno-specific methods. See deno_core/01_core.js
+     SimpleInstallFunction(isolate_, global, "fromUtf8",
+                           Builtin::kTypedArrayUtf8String, 1, false);
 +    SimpleInstallFunction(isolate_, global, "toUtf8",
 +                          Builtin::kStringToUtf8, 1, false);
-+
-     // TODO(caitp): alphasort accessors/methods
-     SimpleInstallFunction(isolate_, prototype, "at",
-                           Builtin::kTypedArrayPrototypeAt, 1, true);
+ 
+     SimpleInstallFunction(isolate_, prototype, "copyWithin",
+                           Builtin::kTypedArrayPrototypeCopyWithin, 2, false);
+-- 
+2.37.1 (Apple Git-137.1)
