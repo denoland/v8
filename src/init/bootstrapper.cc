@@ -3443,6 +3443,9 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     JSObject::AddProperty(isolate_, prototype, factory->iterator_symbol(),
                           values, DONT_ENUM);
 
+    SimpleInstallFunction(isolate_, global, "isOneByte",
+                          Builtin::kStringIsOneByte, 1, false);
+
     // TODO(caitp): alphasort accessors/methods
     SimpleInstallFunction(isolate_, prototype, "at",
                           Builtin::kTypedArrayPrototypeAt, 1, true);
