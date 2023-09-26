@@ -3446,6 +3446,11 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     // TODO(caitp): alphasort accessors/methods
     SimpleInstallFunction(isolate_, prototype, "at",
                           Builtin::kTypedArrayPrototypeAt, 1, true);
+
+    // Deno-specific methods. See deno_core/01_core.js
+    SimpleInstallFunction(isolate_, global, "fromUtf8",
+                          Builtin::kTypedArrayUtf8String, 1, false);
+
     SimpleInstallFunction(isolate_, prototype, "copyWithin",
                           Builtin::kTypedArrayPrototypeCopyWithin, 2, false);
     SimpleInstallFunction(isolate_, prototype, "every",
