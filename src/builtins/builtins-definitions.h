@@ -980,6 +980,7 @@ namespace internal {
   TFJ(TypedArrayBaseConstructor, kJSArgcReceiverSlots, kReceiver)              \
   TFJ(TypedArrayConstructor, kDontAdaptArgumentsSentinel)                      \
   CPP(TypedArrayPrototypeBuffer)                                               \
+  CPP(TypedArrayUtf8String)                                                    \
   /* ES6 #sec-get-%typedarray%.prototype.bytelength */                         \
   TFJ(TypedArrayPrototypeByteLength, kJSArgcReceiverSlots, kReceiver)          \
   /* ES6 #sec-get-%typedarray%.prototype.byteoffset */                         \
