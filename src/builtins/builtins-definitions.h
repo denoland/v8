@@ -951,6 +951,7 @@ namespace internal {
   /* String */                                                                 \
   /* ES #sec-string.fromcodepoint */                                           \
   CPP(StringFromCodePoint)                                                     \
+  CPP(StringToUtf8)                                                            \
   /* ES6 #sec-string.fromcharcode */                                           \
   TFJ(StringFromCharCode, kDontAdaptArgumentsSentinel)                         \
   /* ES6 #sec-string.prototype.lastindexof */                                  \
