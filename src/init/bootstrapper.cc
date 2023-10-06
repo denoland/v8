@@ -3443,18 +3443,19 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     JSObject::AddProperty(isolate_, prototype, factory->iterator_symbol(),
                           values, DONT_ENUM);
 
-    SimpleInstallFunction(isolate_, global, "isOneByte",
-                          Builtin::kStringIsOneByte, 1, false);
+    if (v8_flags.expose_deno_builtins) {
+      // Deno-specific methods. See deno_core/01_core.js
+      SimpleInstallFunction(isolate_, global, "fromUtf8",
+                            Builtin::kTypedArrayUtf8String, 1, false);
+      SimpleInstallFunction(isolate_, global, "toUtf8",
+                            Builtin::kStringToUtf8, 1, false);
+      SimpleInstallFunction(isolate_, global, "isOneByte",
+                            Builtin::kStringIsOneByte, 1, false);
+    }
 
     // TODO(caitp): alphasort accessors/methods
     SimpleInstallFunction(isolate_, prototype, "at",
                           Builtin::kTypedArrayPrototypeAt, 1, true);
-
-    // Deno-specific methods. See deno_core/01_core.js
-    SimpleInstallFunction(isolate_, global, "fromUtf8",
-                          Builtin::kTypedArrayUtf8String, 1, false);
-    SimpleInstallFunction(isolate_, global, "toUtf8",
-                          Builtin::kStringToUtf8, 1, false);
 
     SimpleInstallFunction(isolate_, prototype, "copyWithin",
                           Builtin::kTypedArrayPrototypeCopyWithin, 2, false);
