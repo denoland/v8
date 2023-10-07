@@ -3443,16 +3443,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     JSObject::AddProperty(isolate_, prototype, factory->iterator_symbol(),
                           values, DONT_ENUM);
 
-    if (v8_flags.expose_deno_builtins) {
-      // Deno-specific methods. See deno_core/01_core.js
-      SimpleInstallFunction(isolate_, global, "fromUtf8",
-                            Builtin::kTypedArrayUtf8String, 1, false);
-      SimpleInstallFunction(isolate_, global, "toUtf8",
-                            Builtin::kStringToUtf8, 1, false);
-      SimpleInstallFunction(isolate_, global, "isOneByte",
-                            Builtin::kStringIsOneByte, 1, false);
-    }
-
     // TODO(caitp): alphasort accessors/methods
     SimpleInstallFunction(isolate_, prototype, "at",
                           Builtin::kTypedArrayPrototypeAt, 1, true);
@@ -6379,6 +6369,17 @@ void Genesis::ExtensionStates::set_state(RegisteredExtension* extension,
 bool Genesis::InstallExtensions(Isolate* isolate,
                                 Handle<Context> native_context,
                                 v8::ExtensionConfiguration* extensions) {
+  if (v8_flags.expose_deno_builtins) {
+    Handle<JSObject> global = Handle<JSObject>(native_context->global_object(), isolate);
+    // Deno-specific methods. See deno_core/01_core.js
+    SimpleInstallFunction(isolate, global, "fromUtf8",
+                          Builtin::kTypedArrayUtf8String, 1, false);
+    SimpleInstallFunction(isolate, global, "toUtf8",
+                          Builtin::kStringToUtf8, 1, false);
+    SimpleInstallFunction(isolate, global, "isOneByte",
+                          Builtin::kStringIsOneByte, 1, false);
+  }
+
   ExtensionStates extension_states;  // All extensions have state UNVISITED.
   return InstallAutoExtensions(isolate, &extension_states) &&
          (!v8_flags.expose_gc ||
