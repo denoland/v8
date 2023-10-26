@@ -421,6 +421,9 @@ declare_args() {
   # Whether custom embedder snapshots may extend (= allocate new objects in)
   # ReadOnlySpace.
   v8_enable_extensible_ro_snapshot = true
+
+  # Enable Deno-specific extra bindings
+  deno_enable_extras = false
 }
 
 # Derived defaults.
@@ -1220,6 +1223,9 @@ config("features") {
   }
   if (v8_enable_extensible_ro_snapshot) {
     defines += [ "V8_ENABLE_EXTENSIBLE_RO_SNAPSHOT" ]
+  }
+  if (deno_enable_extras) {
+    defines += [ "DENO_ENABLE_EXTRAS" ]
   }
 }
 
