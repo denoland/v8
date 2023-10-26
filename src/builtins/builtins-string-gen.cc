@@ -684,6 +684,24 @@ TF_BUILTIN(SubString, StringBuiltinsAssembler) {
   Return(SubString(string, SmiUntag(from), SmiUntag(to)));
 }
 
+TF_BUILTIN(StringIsOneByte, StringBuiltinsAssembler) {
+  const TNode<IntPtrT> argc = ChangeInt32ToIntPtr(
+      UncheckedParameter<Int32T>(Descriptor::kJSActualArgumentsCount));
+  CodeStubArguments args(this, argc);
+
+  const TNode<Object> string = args.GetOptionalArgumentValue(0);
+  
+  Label is_onebyte(this);
+
+  TNode<Uint16T> instance_type = LoadInstanceType(CAST(string));
+
+  GotoIf(IsOneByteStringInstanceType(instance_type), &is_onebyte);
+  args.PopAndReturn(FalseConstant());
+
+  BIND(&is_onebyte); 
+  args.PopAndReturn(TrueConstant());
+}
+
 void StringBuiltinsAssembler::GenerateStringRelationalComparison(
     TNode<String> left, TNode<String> right, StringComparison op) {
   TVARIABLE(String, var_left, left);
