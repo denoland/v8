@@ -1,0 +1,214 @@
+From fbbe9e7fad780baaf47c441758b27667ab4c7220 Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Thu, 26 Oct 2023 19:17:33 +0530
+Subject: [PATCH] Add faster string builtins
+
+---
+ BUILD.gn                             |  6 +++++
+ src/builtins/builtins-definitions.h  |  3 +++
+ src/builtins/builtins-string-gen.cc  | 18 ++++++++++++++
+ src/builtins/builtins-string.cc      | 37 ++++++++++++++++++++++++++++
+ src/builtins/builtins-typed-array.cc | 30 ++++++++++++++++++++++
+ src/init/bootstrapper.cc             |  9 +++++++
+ 6 files changed, 103 insertions(+)
+
+diff --git a/BUILD.gn b/BUILD.gn
+index dd97c4f922..96a3cabb0b 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -421,6 +421,9 @@ declare_args() {
+   # Whether custom embedder snapshots may extend (= allocate new objects in)
+   # ReadOnlySpace.
+   v8_enable_extensible_ro_snapshot = true
++
++  # Enable Deno-specific extra bindings
++  deno_enable_extras = false
+ }
+ 
+ # Derived defaults.
+@@ -1221,6 +1224,9 @@ config("features") {
+   if (v8_enable_extensible_ro_snapshot) {
+     defines += [ "V8_ENABLE_EXTENSIBLE_RO_SNAPSHOT" ]
+   }
++  if (deno_enable_extras) {
++    defines += [ "DENO_ENABLE_EXTRAS" ]
++  }
+ }
+ 
+ config("toolchain") {
+diff --git a/src/builtins/builtins-definitions.h b/src/builtins/builtins-definitions.h
+index 18da8a651b..a664490b26 100644
+--- a/src/builtins/builtins-definitions.h
++++ b/src/builtins/builtins-definitions.h
+@@ -951,6 +951,7 @@ namespace internal {
+   /* String */                                                                 \
+   /* ES #sec-string.fromcodepoint */                                           \
+   CPP(StringFromCodePoint)                                                     \
++  CPP(StringToUtf8)                                                            \
+   /* ES6 #sec-string.fromcharcode */                                           \
+   TFJ(StringFromCharCode, kDontAdaptArgumentsSentinel)                         \
+   /* ES6 #sec-string.prototype.lastindexof */                                  \
+@@ -966,6 +967,7 @@ namespace internal {
+   TFJ(StringPrototypeSplit, kDontAdaptArgumentsSentinel)                       \
+   /* ES6 #sec-string.raw */                                                    \
+   CPP(StringRaw)                                                               \
++  TFJ(StringIsOneByte, kDontAdaptArgumentsSentinel)                            \
+                                                                                \
+   /* Symbol */                                                                 \
+   /* ES #sec-symbol-constructor */                                             \
+@@ -980,6 +982,7 @@ namespace internal {
+   TFJ(TypedArrayBaseConstructor, kJSArgcReceiverSlots, kReceiver)              \
+   TFJ(TypedArrayConstructor, kDontAdaptArgumentsSentinel)                      \
+   CPP(TypedArrayPrototypeBuffer)                                               \
++  CPP(TypedArrayUtf8String)                                                    \
+   /* ES6 #sec-get-%typedarray%.prototype.bytelength */                         \
+   TFJ(TypedArrayPrototypeByteLength, kJSArgcReceiverSlots, kReceiver)          \
+   /* ES6 #sec-get-%typedarray%.prototype.byteoffset */                         \
+diff --git a/src/builtins/builtins-string-gen.cc b/src/builtins/builtins-string-gen.cc
+index 85035f3ef5..1d530ca958 100644
+--- a/src/builtins/builtins-string-gen.cc
++++ b/src/builtins/builtins-string-gen.cc
+@@ -684,6 +684,24 @@ TF_BUILTIN(SubString, StringBuiltinsAssembler) {
+   Return(SubString(string, SmiUntag(from), SmiUntag(to)));
+ }
+ 
++TF_BUILTIN(StringIsOneByte, StringBuiltinsAssembler) {
++  const TNode<IntPtrT> argc = ChangeInt32ToIntPtr(
++      UncheckedParameter<Int32T>(Descriptor::kJSActualArgumentsCount));
++  CodeStubArguments args(this, argc);
++
++  const TNode<Object> string = args.GetOptionalArgumentValue(0);
++  
++  Label is_onebyte(this);
++
++  TNode<Uint16T> instance_type = LoadInstanceType(CAST(string));
++
++  GotoIf(IsOneByteStringInstanceType(instance_type), &is_onebyte);
++  args.PopAndReturn(FalseConstant());
++
++  BIND(&is_onebyte); 
++  args.PopAndReturn(TrueConstant());
++}
++
+ void StringBuiltinsAssembler::GenerateStringRelationalComparison(
+     TNode<String> left, TNode<String> right, StringComparison op) {
+   TVARIABLE(String, var_left, left);
+diff --git a/src/builtins/builtins-string.cc b/src/builtins/builtins-string.cc
+index db193bdf8b..dd3ba322d1 100644
+--- a/src/builtins/builtins-string.cc
++++ b/src/builtins/builtins-string.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "src/api/api-inl.h"
+ #include "src/builtins/builtins-utils-inl.h"
+ #include "src/builtins/builtins.h"
+ #include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
+@@ -131,6 +132,42 @@ BUILTIN(StringPrototypeLastIndexOf) {
+                              args.atOrUndefined(isolate, 2));
+ }
+ 
++void Deleter(void* data, size_t _len, void* _info) {
++  delete[] static_cast<uint8_t*>(data);
++}
++
++BUILTIN(StringToUtf8) {
++  HandleScope scope(isolate);
++
++  Handle<String> string;
++  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, string,
++                                     Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
++
++  string = String::Flatten(isolate, string);
++
++  size_t len;
++  uint8_t* buf_;
++  std::unique_ptr<uint8_t[]> allocated_;
++
++  Local<v8::String> local = v8::Utils::ToLocal(string);
++  auto* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
++  len = local->Utf8Length(v8_isolate);
++
++  allocated_ = std::make_unique<uint8_t[]>(len);
++  buf_ = allocated_.release();
++
++  if (len > 0) {
++    local->WriteUtf8(v8_isolate, reinterpret_cast<char*>(buf_));
++  }
++
++  std::unique_ptr<BackingStore> memory = BackingStore::WrapAllocation(
++      buf_, len,
++      Deleter, nullptr, SharedFlag::kNotShared);
++  Handle<JSArrayBuffer> new_buffer = isolate->factory()->NewJSArrayBuffer(std::move(memory));
++
++  return *new_buffer;
++}
++
+ // ES6 section 21.1.3.10 String.prototype.localeCompare ( that )
+ //
+ // This function is implementation specific.  For now, we do not
+diff --git a/src/builtins/builtins-typed-array.cc b/src/builtins/builtins-typed-array.cc
+index 4d41333588..aa27d41a4b 100644
+--- a/src/builtins/builtins-typed-array.cc
++++ b/src/builtins/builtins-typed-array.cc
+@@ -24,6 +24,36 @@ BUILTIN(TypedArrayPrototypeBuffer) {
+   return *typed_array->GetBuffer();
+ }
+ 
++BUILTIN(TypedArrayUtf8String) {
++  HandleScope scope(isolate);
++
++  Handle<JSTypedArray> typed_array;
++  bool ignore_bom = false;
++  int offset = 0;
++
++  const char* method_name = "fromUtf8";
++  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
++      isolate, typed_array,
++      JSTypedArray::Validate(isolate, args.atOrUndefined(isolate, 1), method_name));
++
++  ignore_bom = args.length() > 2 && Object::BooleanValue(*args.at<Object>(2), isolate);
++
++  auto buffer = typed_array->GetBuffer();
++  auto len = buffer->byte_length();
++  const uint8_t* bs = (const uint8_t*)buffer->backing_store();
++  
++  if (!ignore_bom && 
++      len >= 3 &&
++      (*bs) == 0xEF &&
++      *(bs + 1) == 0xBB &&
++      *(bs + 2) == 0xBF) {
++    offset += 3;
++  }
++
++  RETURN_RESULT_OR_FAILURE(
++      isolate, isolate->factory()->NewStringFromUtf8(base::Vector<const char>((const char*)(bs + offset), len - offset)));
++}
++
+ namespace {
+ 
+ int64_t CapRelativeIndex(Handle<Object> num, int64_t minimum, int64_t maximum) {
+diff --git a/src/init/bootstrapper.cc b/src/init/bootstrapper.cc
+index 2beaf45b14..fcfeb72de3 100644
+--- a/src/init/bootstrapper.cc
++++ b/src/init/bootstrapper.cc
+@@ -6273,6 +6273,15 @@ bool Genesis::InstallExtrasBindings() {
+   SimpleInstallFunction(isolate(), extras_binding, "trace", Builtin::kTrace, 5,
+                         true);
+ 
++#ifdef DENO_ENABLE_EXTRAS
++  SimpleInstallFunction(isolate(), extras_binding, "fromUtf8",
++                        Builtin::kTypedArrayUtf8String, 1, false);
++  SimpleInstallFunction(isolate(), extras_binding, "toUtf8",
++                        Builtin::kStringToUtf8, 1, false);
++  SimpleInstallFunction(isolate(), extras_binding, "isOneByte",
++                        Builtin::kStringIsOneByte, 1, false);
++#endif  // DENO_ENABLE_EXTRAS
++
+   InitializeConsole(extras_binding);
+ 
+   native_context()->set_extras_binding_object(*extras_binding);
+-- 
+2.37.1 (Apple Git-137.1)
+
