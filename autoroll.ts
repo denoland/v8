@@ -2,6 +2,8 @@ const V8_VERSIONS = [
   "11.8",
 ];
 
+const checkVersions = !!Deno.env.get("CHECK_V8_VERSIONS");
+
 // Extract the V8 version from the include/v8-version.h file.
 function extractVersion(versionDotH: string) {
   const MAJOR_PREFIX = "#define V8_MAJOR_VERSION ";
@@ -111,19 +113,20 @@ for (const version of V8_VERSIONS) {
   const versionDotH = await Deno.readTextFile("./v8/include/v8-version.h");
   const upstreamVersion = extractVersion(versionDotH);
 
-  // If the upstream version does not match the current version, then we need to
-  // roll.
-  if (upstreamVersion === currentVersion) {
+  if (checkVersions) {
+    // If the upstream version does not match the current version, then we need to
+    // roll.
+    if (upstreamVersion === currentVersion) {
+      console.log(
+        `Upstream version ${upstreamVersion} matches current version ${currentVersion}. No need to roll ${UPSTREAM_LKGR}.`,
+      );
+      continue;
+    }
+
     console.log(
-      `Upstream version ${upstreamVersion} matches current version ${currentVersion}. No need to roll ${UPSTREAM_LKGR}.`,
+      `Upstream version ${upstreamVersion} does not match current version ${currentVersion}. Rolling ${UPSTREAM_LKGR}...`,
     );
-    continue;
   }
-
-  console.log(
-    `Upstream version ${upstreamVersion} does not match current version ${currentVersion}. Rolling ${UPSTREAM_LKGR}...`,
-  );
-
   // Get list of all patches in the ../patches directory.
   const patches = [...Deno.readDirSync("./patches")]
     .map((x) => `../patches/${x.name}`);

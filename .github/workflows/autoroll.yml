@@ -4,6 +4,11 @@ on:
   schedule:
     - cron:  '0 10 * * *'
   workflow_dispatch:
+    inputs:
+      checkVersions:
+        description: 'Check V8 versions'
+        default: true
+        type: boolean
   push:
     branches: [autoroll]
 
@@ -24,5 +29,8 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global user.password ${{ github.token }}
           git config --global url."https://${{ github.actor }}:${{ github.token }}@github.com/".insteadOf "https://github.com/"
-      - run: deno run -A ./autoroll.ts
+      - name: Run autoroll script
+        env:
+          CHECK_V8_VERSIONS: ${{ github.events.inputs.checkVersions }}
+        run: deno run -A ./autoroll.ts
           
