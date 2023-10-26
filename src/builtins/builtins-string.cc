@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/api/api-inl.h"
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
 #include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
@@ -129,6 +130,42 @@ BUILTIN(StringPrototypeLastIndexOf) {
   return String::LastIndexOf(isolate, args.receiver(),
                              args.atOrUndefined(isolate, 1),
                              args.atOrUndefined(isolate, 2));
+}
+
+void Deleter(void* data, size_t _len, void* _info) {
+  delete[] static_cast<uint8_t*>(data);
+}
+
+BUILTIN(StringToUtf8) {
+  HandleScope scope(isolate);
+
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, string,
+                                     Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  string = String::Flatten(isolate, string);
+
+  size_t len;
+  uint8_t* buf_;
+  std::unique_ptr<uint8_t[]> allocated_;
+
+  Local<v8::String> local = v8::Utils::ToLocal(string);
+  auto* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+  len = local->Utf8Length(v8_isolate);
+
+  allocated_ = std::make_unique<uint8_t[]>(len);
+  buf_ = allocated_.release();
+
+  if (len > 0) {
+    local->WriteUtf8(v8_isolate, reinterpret_cast<char*>(buf_));
+  }
+
+  std::unique_ptr<BackingStore> memory = BackingStore::WrapAllocation(
+      buf_, len,
+      Deleter, nullptr, SharedFlag::kNotShared);
+  Handle<JSArrayBuffer> new_buffer = isolate->factory()->NewJSArrayBuffer(std::move(memory));
+
+  return *new_buffer;
 }
 
 // ES6 section 21.1.3.10 String.prototype.localeCompare ( that )
