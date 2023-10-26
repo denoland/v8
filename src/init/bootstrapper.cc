@@ -6274,6 +6274,16 @@ bool Genesis::InstallExtrasBindings() {
   SimpleInstallFunction(isolate(), extras_binding, "trace", Builtin::kTrace, 5,
                         true);
 
+  if (v8_flags.expose_deno_builtins) {
+    // Deno-specific methods. See deno_core/01_core.js
+    SimpleInstallFunction(isolate(), extras_binding, "fromUtf8",
+                          Builtin::kTypedArrayUtf8String, 1, false);
+    SimpleInstallFunction(isolate(), extras_binding, "toUtf8",
+                          Builtin::kStringToUtf8, 1, false);
+    SimpleInstallFunction(isolate(), extras_binding, "isOneByte",
+                          Builtin::kStringIsOneByte, 1, false);
+  }
+  
   InitializeConsole(extras_binding);
 
   native_context()->set_extras_binding_object(*extras_binding);
@@ -6369,17 +6379,6 @@ void Genesis::ExtensionStates::set_state(RegisteredExtension* extension,
 bool Genesis::InstallExtensions(Isolate* isolate,
                                 Handle<Context> native_context,
                                 v8::ExtensionConfiguration* extensions) {
-  if (v8_flags.expose_deno_builtins) {
-    Handle<JSObject> global = Handle<JSObject>(native_context->global_object(), isolate);
-    // Deno-specific methods. See deno_core/01_core.js
-    SimpleInstallFunction(isolate, global, "fromUtf8",
-                          Builtin::kTypedArrayUtf8String, 1, false);
-    SimpleInstallFunction(isolate, global, "toUtf8",
-                          Builtin::kStringToUtf8, 1, false);
-    SimpleInstallFunction(isolate, global, "isOneByte",
-                          Builtin::kStringIsOneByte, 1, false);
-  }
-
   ExtensionStates extension_states;  // All extensions have state UNVISITED.
   return InstallAutoExtensions(isolate, &extension_states) &&
          (!v8_flags.expose_gc ||
