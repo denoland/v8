@@ -6273,6 +6273,15 @@ bool Genesis::InstallExtrasBindings() {
   SimpleInstallFunction(isolate(), extras_binding, "trace", Builtin::kTrace, 5,
                         true);
 
+#ifdef DENO_ENABLE_EXTRAS
+  SimpleInstallFunction(isolate(), extras_binding, "fromUtf8",
+                        Builtin::kTypedArrayUtf8String, 1, false);
+  SimpleInstallFunction(isolate(), extras_binding, "toUtf8",
+                        Builtin::kStringToUtf8, 1, false);
+  SimpleInstallFunction(isolate(), extras_binding, "isOneByte",
+                        Builtin::kStringIsOneByte, 1, false);
+#endif  // DENO_ENABLE_EXTRAS
+
   InitializeConsole(extras_binding);
 
   native_context()->set_extras_binding_object(*extras_binding);
