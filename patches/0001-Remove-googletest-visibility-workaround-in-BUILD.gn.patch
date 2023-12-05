@@ -1,16 +1,14 @@
-From 11de73d7d9826ce0c3ffc0f561b4ca6e0453d011 Mon Sep 17 00:00:00 2001
-From: Ryan Dahl <ry@tinyclouds.org>
-Date: Thu, 10 Jun 2021 09:05:57 -0400
-Subject: [PATCH 1/4] Revert "[test] Import v8.gni to googletest and fix its
- visibility"
+From fe0790450d0c8668e859d125e952bd3687267adb Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <dj.srivastava23@gmail.com>
+Date: Tue, 5 Dec 2023 09:35:57 +0530
+Subject: [PATCH] Remove googletest visibility workaround in BUILD.gn
 
-This reverts commit 7f9d7f0e40c57a15a4c052f92321f1508cd7d917.
 ---
- third_party/googletest/BUILD.gn | 20 --------------------
- 1 file changed, 20 deletions(-)
+ third_party/googletest/BUILD.gn | 18 ------------------
+ 1 file changed, 18 deletions(-)
 
 diff --git a/third_party/googletest/BUILD.gn b/third_party/googletest/BUILD.gn
-index bc82c635da..0918a49606 100644
+index 1cf84b3..0918a49 100644
 --- a/third_party/googletest/BUILD.gn
 +++ b/third_party/googletest/BUILD.gn
 @@ -2,8 +2,6 @@
@@ -22,7 +20,7 @@ index bc82c635da..0918a49606 100644
  config("gtest_config") {
    visibility = [ ":*" ]  # gmock also shares this config.
  
-@@ -91,15 +89,6 @@ source_set("gtest") {
+@@ -91,14 +89,6 @@ source_set("gtest") {
    configs -= [ "//build/config/compiler:chromium_code" ]
    configs += [ "//build/config/compiler:no_chromium_code" ]
  
@@ -37,7 +35,7 @@ index bc82c635da..0918a49606 100644
    deps = []
  
    if (is_fuchsia) {
-@@ -144,15 +133,6 @@ source_set("gmock") {
+@@ -143,14 +133,6 @@ source_set("gmock") {
      "src/googlemock/src/gmock.cc",
    ]
  
@@ -53,5 +51,5 @@ index bc82c635da..0918a49606 100644
      ":gmock_config",
      ":gtest_config",
 -- 
-2.37.3
+2.37.1 (Apple Git-137.1)
 
