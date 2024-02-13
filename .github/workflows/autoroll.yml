@@ -12,6 +12,8 @@ on:
   push:
     branches: [autoroll]
 
+permissions: write-all
+
 jobs:
   update:
     runs-on: ubuntu-latest
