@@ -1,0 +1,281 @@
+From f428fe611da06ece35c1c5aa519e22549efae970 Mon Sep 17 00:00:00 2001
+From: snek <snek@chromium.org>
+Date: Tue, 23 Jul 2024 08:04:15 -0700
+Subject: [PATCH] Reland "[api] add Isolate::GetCurrentHostDefinedOptions"
+
+This is a reland of commit 6e72f270f117220f4ce859378b2d5a20ae8dd707
+
+Original change's description:
+> [api] add Isolate::GetCurrentHostDefinedOptions
+>
+> Change-Id: I157a71a43c354f87b4849abf3a14cf3019579b16
+> Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/5711754
+> Reviewed-by: Camillo Bruni <cbruni@chromium.org>
+> Reviewed-by: Victor Gomes <victorgomes@chromium.org>
+> Commit-Queue: snek <snek@chromium.org>
+> Cr-Commit-Position: refs/heads/main@{#95198}
+
+Change-Id: I4748bf623add78bff2ea6a9cb0f26c86a6daf7d4
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/5738275
+Commit-Queue: snek <snek@chromium.org>
+Reviewed-by: Victor Gomes <victorgomes@chromium.org>
+Reviewed-by: Camillo Bruni <cbruni@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#95282}
+---
+ include/v8-isolate.h          |  6 +++++
+ src/api/api.cc                | 10 +++++++
+ src/execution/isolate.cc      | 29 ++++++++++++++++++++
+ src/execution/isolate.h       |  1 +
+ src/objects/script-inl.h      | 12 +++++++++
+ src/objects/script.h          |  2 ++
+ src/runtime/runtime-module.cc | 17 ++----------
+ test/cctest/cctest.h          |  2 +-
+ test/cctest/test-api.cc       | 51 +++++++++++++++++++++++++++++++++++
+ 9 files changed, 114 insertions(+), 16 deletions(-)
+
+diff --git a/include/v8-isolate.h b/include/v8-isolate.h
+index 17c107766b9..5607dcf808f 100644
+--- a/include/v8-isolate.h
++++ b/include/v8-isolate.h
+@@ -936,6 +936,12 @@ class V8_EXPORT Isolate {
+    */
+   Local<Context> GetIncumbentContext();
+ 
++  /**
++   * Returns the host defined options set for currently running script or
++   * module, if available.
++   */
++  MaybeLocal<Data> GetCurrentHostDefinedOptions();
++
+   /**
+    * Schedules a v8::Exception::Error with the given message.
+    * See ThrowException for more details. Templatized to provide compile-time
+diff --git a/src/api/api.cc b/src/api/api.cc
+index 988c902b77f..f18197a3377 100644
+--- a/src/api/api.cc
++++ b/src/api/api.cc
+@@ -9629,6 +9629,16 @@ v8::Local<v8::Context> Isolate::GetIncumbentContext() {
+   return Utils::ToLocal(context);
+ }
+ 
++v8::MaybeLocal<v8::Data> Isolate::GetCurrentHostDefinedOptions() {
++  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
++  i::Handle<i::Script> script;
++  if (!i_isolate->CurrentReferrerScript().ToHandle(&script)) {
++    return MaybeLocal<v8::Data>();
++  }
++  return ToApiHandle<Data>(
++      i::direct_handle(script->host_defined_options(), i_isolate), i_isolate);
++}
++
+ v8::Local<Value> Isolate::ThrowError(v8::Local<v8::String> message) {
+   return ThrowException(v8::Exception::Error(message));
+ }
+diff --git a/src/execution/isolate.cc b/src/execution/isolate.cc
+index 108f348a12f..28f51548c68 100644
+--- a/src/execution/isolate.cc
++++ b/src/execution/isolate.cc
+@@ -1553,6 +1553,24 @@ class CurrentScriptNameStackVisitor {
+   Handle<String> name_or_url_;
+ };
+ 
++class CurrentScriptStackVisitor {
++ public:
++  bool Visit(FrameSummary& summary) {
++    // Skip frames that aren't subject to debugging. Keep this in sync with
++    // StackFrameBuilder::Visit so both visitors visit the same frames.
++    if (!summary.is_subject_to_debugging()) return true;
++
++    // Frames that are subject to debugging always have a valid script object.
++    current_script_ = Cast<Script>(summary.script());
++    return false;
++  }
++
++  MaybeHandle<Script> CurrentScript() const { return current_script_; }
++
++ private:
++  MaybeHandle<Script> current_script_;
++};
++
+ }  // namespace
+ 
+ Handle<String> Isolate::CurrentScriptNameOrSourceURL() {
+@@ -1562,6 +1580,17 @@ Handle<String> Isolate::CurrentScriptNameOrSourceURL() {
+   return visitor.CurrentScriptNameOrSourceURL();
+ }
+ 
++MaybeHandle<Script> Isolate::CurrentReferrerScript() {
++  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.stack_trace"), __func__);
++  CurrentScriptStackVisitor visitor{};
++  VisitStack(this, &visitor);
++  Handle<Script> script;
++  if (!visitor.CurrentScript().ToHandle(&script)) {
++    return MaybeHandle<Script>();
++  }
++  return handle(script->GetEvalOrigin(), this);
++}
++
+ bool Isolate::GetStackTraceLimit(Isolate* isolate, int* result) {
+   if (v8_flags.correctness_fuzzer_suppressions) return false;
+   Handle<JSObject> error = isolate->error_function();
+diff --git a/src/execution/isolate.h b/src/execution/isolate.h
+index 5b16382bcc1..483f6abf0a3 100644
+--- a/src/execution/isolate.h
++++ b/src/execution/isolate.h
+@@ -985,6 +985,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
+   // source URL. The inspected frames are the same as for the detailed stack
+   // trace.
+   Handle<String> CurrentScriptNameOrSourceURL();
++  MaybeHandle<Script> CurrentReferrerScript();
+   bool GetStackTraceLimit(Isolate* isolate, int* result);
+ 
+   Address GetAbstractPC(int* line, int* column);
+diff --git a/src/objects/script-inl.h b/src/objects/script-inl.h
+index 030498dab9f..0aff9785c43 100644
+--- a/src/objects/script-inl.h
++++ b/src/objects/script-inl.h
+@@ -218,6 +218,18 @@ bool Script::IsMaybeUnfinalized(Isolate* isolate) const {
+          Cast<String>(source())->length() == 0;
+ }
+ 
++Tagged<Script> Script::GetEvalOrigin() {
++  DisallowGarbageCollection no_gc;
++  Tagged<Script> origin_script = *this;
++  while (origin_script->has_eval_from_shared()) {
++    Tagged<HeapObject> maybe_script =
++        origin_script->eval_from_shared()->script();
++    CHECK(IsScript(maybe_script));
++    origin_script = Cast<Script>(maybe_script);
++  }
++  return origin_script;
++}
++
+ }  // namespace internal
+ }  // namespace v8
+ 
+diff --git a/src/objects/script.h b/src/objects/script.h
+index 58428612d60..01d01365fc2 100644
+--- a/src/objects/script.h
++++ b/src/objects/script.h
+@@ -170,6 +170,8 @@ class Script : public TorqueGeneratedScript<Script, Struct> {
+   // Retrieve source position from where eval was called.
+   static int GetEvalPosition(Isolate* isolate, DirectHandle<Script> script);
+ 
++  Tagged<Script> inline GetEvalOrigin();
++
+   // Initialize line_ends array with source code positions of line ends if
+   // it doesn't exist yet.
+   static inline void InitLineEnds(Isolate* isolate,
+diff --git a/src/runtime/runtime-module.cc b/src/runtime/runtime-module.cc
+index ff570b770eb..447be2c7cfe 100644
+--- a/src/runtime/runtime-module.cc
++++ b/src/runtime/runtime-module.cc
+@@ -9,19 +9,6 @@
+ namespace v8 {
+ namespace internal {
+ 
+-namespace {
+-Handle<Script> GetEvalOrigin(Isolate* isolate, Tagged<Script> origin_script) {
+-  DisallowGarbageCollection no_gc;
+-  while (origin_script->has_eval_from_shared()) {
+-    Tagged<HeapObject> maybe_script =
+-        origin_script->eval_from_shared()->script();
+-    CHECK(IsScript(maybe_script));
+-    origin_script = Cast<Script>(maybe_script);
+-  }
+-  return handle(origin_script, isolate);
+-}
+-}  // namespace
+-
+ RUNTIME_FUNCTION(Runtime_DynamicImportCall) {
+   HandleScope scope(isolate);
+   DCHECK_LE(2, args.length());
+@@ -34,8 +21,8 @@ RUNTIME_FUNCTION(Runtime_DynamicImportCall) {
+     import_options = args.at<Object>(2);
+   }
+ 
+-  Handle<Script> referrer_script =
+-      GetEvalOrigin(isolate, Cast<Script>(function->shared()->script()));
++  Handle<Script> referrer_script = handle(
++      Cast<Script>(function->shared()->script())->GetEvalOrigin(), isolate);
+   RETURN_RESULT_OR_FAILURE(isolate,
+                            isolate->RunHostImportModuleDynamicallyCallback(
+                                referrer_script, specifier, import_options));
+diff --git a/test/cctest/cctest.h b/test/cctest/cctest.h
+index 3da41b83e5f..a0d884c2b8e 100644
+--- a/test/cctest/cctest.h
++++ b/test/cctest/cctest.h
+@@ -396,7 +396,7 @@ static inline v8::Local<v8::Boolean> v8_bool(bool val) {
+   return v8::Boolean::New(v8::Isolate::GetCurrent(), val);
+ }
+ 
+-static inline v8::Local<v8::Value> v8_num(double x) {
++static inline v8::Local<v8::Number> v8_num(double x) {
+   return v8::Number::New(v8::Isolate::GetCurrent(), x);
+ }
+ 
+diff --git a/test/cctest/test-api.cc b/test/cctest/test-api.cc
+index 92e933176f4..484be596b59 100644
+--- a/test/cctest/test-api.cc
++++ b/test/cctest/test-api.cc
+@@ -24944,6 +24944,57 @@ TEST(StreamingScriptWithSourceMappingURLInTheMiddle) {
+                    nullptr, "bar2.js");
+ }
+ 
++void GetCurrentHostDefinedOptionsTest(
++    const v8::FunctionCallbackInfo<Value>& info) {
++  v8::Local<v8::Data> host_defined_options =
++      info.GetIsolate()->GetCurrentHostDefinedOptions().ToLocalChecked();
++  CHECK(host_defined_options.As<v8::PrimitiveArray>()
++            ->Get(info.GetIsolate(), 0)
++            ->StrictEquals(v8_num(4.2)));
++}
++
++THREADED_TEST(TestGetCurrentHostDefinedOptions) {
++  LocalContext env;
++  v8::Isolate* isolate = CcTest::isolate();
++  v8::HandleScope scope(isolate);
++  v8::Local<v8::Context> context = isolate->GetCurrentContext();
++
++  context->Global()
++      ->Set(context, v8_str("test"),
++            v8::Function::New(context, GetCurrentHostDefinedOptionsTest)
++                .ToLocalChecked())
++      .ToChecked();
++
++  {
++    v8::Local<v8::PrimitiveArray> host_defined_options =
++        v8::PrimitiveArray::New(isolate, 1);
++    host_defined_options->Set(isolate, 0, v8_num(4.2));
++    v8::ScriptOrigin origin(v8_str(""), 0, 0, false, -1, Local<v8::Value>(),
++                            false, false, false, host_defined_options);
++    v8::ScriptCompiler::Source source(
++        v8::String::NewFromUtf8Literal(isolate, "eval('[1].forEach(test)')"),
++        origin);
++    v8::Local<v8::Script> script =
++        v8::ScriptCompiler::Compile(context, &source).ToLocalChecked();
++    script->Run(context).ToLocalChecked();
++  }
++
++  {
++    v8::Local<v8::PrimitiveArray> host_defined_options =
++        v8::PrimitiveArray::New(isolate, 1);
++    host_defined_options->Set(isolate, 0, v8_num(4.2));
++    v8::ScriptOrigin origin(v8_str(""), 0, 0, false, -1, Local<v8::Value>(),
++                            false, false, true, host_defined_options);
++    v8::ScriptCompiler::Source source(
++        v8::String::NewFromUtf8Literal(isolate, "eval('[1].forEach(test)')"),
++        origin);
++    v8::Local<v8::Module> module =
++        v8::ScriptCompiler::CompileModule(isolate, &source).ToLocalChecked();
++    module->InstantiateModule(context, UnexpectedModuleResolveCallback)
++        .ToChecked();
++    module->Evaluate(context).ToLocalChecked();
++  }
++}
+ 
+ TEST(NewStringRangeError) {
+   // This test uses a lot of memory and fails with flaky OOM when run
+-- 
+2.45.2
+
