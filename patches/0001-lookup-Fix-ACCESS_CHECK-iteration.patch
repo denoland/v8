@@ -1,0 +1,88 @@
+From 6b85b7c6b8fb3950196e2a7a921c1b9310d8e269 Mon Sep 17 00:00:00 2001
+From: snek <snek@chromium.org>
+Date: Wed, 24 Jul 2024 11:23:26 -0700
+Subject: [PATCH] [lookup] Fix ACCESS_CHECK iteration
+
+There can be multiple ACCESS_CHECKs in a row for the global object +
+global proxy.
+
+Bug: 42204611
+Change-Id: If7ad64bf37efc5a1888a5b56881dbc7de3fd0389
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/5737946
+Reviewed-by: Leszek Swirski <leszeks@chromium.org>
+Commit-Queue: snek <snek@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#95261}
+---
+ src/builtins/accessors.cc | 2 +-
+ src/ic/ic.cc              | 2 +-
+ src/objects/js-objects.cc | 7 ++++---
+ 3 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/builtins/accessors.cc b/src/builtins/accessors.cc
+index 531afd1ad4b..799ba8e753b 100644
+--- a/src/builtins/accessors.cc
++++ b/src/builtins/accessors.cc
+@@ -91,7 +91,7 @@ Accessors::ReplaceAccessorWithDataProperty(Isolate* isolate,
+                     LookupIterator::OWN_SKIP_INTERCEPTOR);
+   // Skip any access checks we might hit. This accessor should never hit in a
+   // situation where the caller does not have access.
+-  if (it.state() == LookupIterator::ACCESS_CHECK) {
++  while (it.state() == LookupIterator::ACCESS_CHECK) {
+     CHECK(it.HasAccess());
+     it.Next();
+   }
+diff --git a/src/ic/ic.cc b/src/ic/ic.cc
+index 4a1b2147efe..d87a1eff392 100644
+--- a/src/ic/ic.cc
++++ b/src/ic/ic.cc
+@@ -4012,7 +4012,7 @@ RUNTIME_FUNCTION(Runtime_StorePropertyWithInterceptor) {
+ 
+   LookupIterator it(isolate, receiver, name, receiver);
+   // Skip past any access check on the receiver.
+-  if (it.state() == LookupIterator::ACCESS_CHECK) {
++  while (it.state() == LookupIterator::ACCESS_CHECK) {
+     DCHECK(it.HasAccess());
+     it.Next();
+   }
+diff --git a/src/objects/js-objects.cc b/src/objects/js-objects.cc
+index ecea80ece76..b63610260b9 100644
+--- a/src/objects/js-objects.cc
++++ b/src/objects/js-objects.cc
+@@ -1831,7 +1831,7 @@ Maybe<bool> GetPropertyDescriptorWithInterceptor(LookupIterator* it,
+                                                  PropertyDescriptor* desc) {
+   Handle<InterceptorInfo> interceptor;
+ 
+-  if (it->state() == LookupIterator::ACCESS_CHECK) {
++  while (it->state() == LookupIterator::ACCESS_CHECK) {
+     if (it->HasAccess()) {
+       it->Next();
+     } else {
+@@ -1841,6 +1841,7 @@ Maybe<bool> GetPropertyDescriptorWithInterceptor(LookupIterator* it,
+         return Just(false);
+       }
+       CHECK(!interceptor.is_null());
++      break;
+     }
+   }
+   if (it->state() == LookupIterator::INTERCEPTOR) {
+@@ -4734,7 +4735,7 @@ MaybeHandle<Object> JSObject::DefineOwnAccessorIgnoreAttributes(
+ 
+   it->UpdateProtector();
+ 
+-  if (it->state() == LookupIterator::ACCESS_CHECK) {
++  while (it->state() == LookupIterator::ACCESS_CHECK) {
+     if (!it->HasAccess()) {
+       RETURN_ON_EXCEPTION(
+           isolate, isolate->ReportFailedAccessCheck(it->GetHolder<JSObject>()));
+@@ -4769,7 +4770,7 @@ MaybeHandle<Object> JSObject::SetAccessor(Handle<JSObject> object,
+ 
+   // Duplicate ACCESS_CHECK outside of GetPropertyAttributes for the case that
+   // the FailedAccessCheckCallbackFunction doesn't throw an exception.
+-  if (it.state() == LookupIterator::ACCESS_CHECK) {
++  while (it.state() == LookupIterator::ACCESS_CHECK) {
+     if (!it.HasAccess()) {
+       RETURN_ON_EXCEPTION(isolate, isolate->ReportFailedAccessCheck(object));
+       UNREACHABLE();
+-- 
+2.45.2
+
