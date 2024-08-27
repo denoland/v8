@@ -1,0 +1,154 @@
+From ee79f7532ee567938278f69a8f271bd53bd6a599 Mon Sep 17 00:00:00 2001
+From: Shu-yu Guo <syg@chromium.org>
+Date: Wed, 21 Aug 2024 17:04:57 -0700
+Subject: [PATCH] [top-level-await] Fix errored case in module graphs in TLA
+
+In module graphs with TLA, it is possible that a module evaluation
+causes the rejection of one of its async ancestors, setting the
+ancestor's state to kErrored. When evaluation bubbles back up to that
+evaluating that ancestor, it should skip that ancestor because it's
+already errored. This case was incorrectly thought to be impossible by
+construction and was not correctly handled.
+
+Consider a graph with three (3) modules:
+
+async_entry.mjs [[HasTLA]]
+      | imports
+      v
+ sync_throw.mjs
+      | imports
+      v
+async_leaf.mjs [[HasTLA]]
+
+When async_leaf.mjs finishes async evaluating, it gathers its ancestors
+[sync_throw.mjs, async_entry.mjs] and starts evaluating them.
+
+First, it evaluates sync_throw.mjs, which doesn't have a TLA, and
+synchronously throws. This causes it to reject async_entry.mjs, its
+async ancestor, and set the state to kErrored.
+
+Second, it evaluates async_entry.mjs, which is assumed to not be
+kErrored, but is in fact already kErrored due to the previous step.
+
+Also drive-by cleans up spec step comments.
+
+Fixed: 357487162
+Change-Id: Ieaeed44c0948fccefe8ec3f2651e7ec3e61add4c
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/5805022
+Reviewed-by: Igor Sheludko <ishell@chromium.org>
+Commit-Queue: Shu-yu Guo <syg@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#95778}
+---
+ src/objects/source-text-module.cc             | 22 +++++++++----------
+ .../modules-async-error-due-to-import.js      |  6 +++++
+ ...-skip-async-errors-due-to-import-entry.mjs |  7 ++++++
+ .../modules-skip-async-leaf-with-tla.mjs      |  5 +++++
+ .../modules-skip-async-mid-with-sync-error.js |  7 ++++++
+ 5 files changed, 35 insertions(+), 12 deletions(-)
+ create mode 100644 test/mjsunit/harmony/modules-async-error-due-to-import.js
+ create mode 100644 test/mjsunit/harmony/modules-skip-async-errors-due-to-import-entry.mjs
+ create mode 100644 test/mjsunit/harmony/modules-skip-async-leaf-with-tla.mjs
+ create mode 100644 test/mjsunit/harmony/modules-skip-async-mid-with-sync-error.js
+
+diff --git a/src/objects/source-text-module.cc b/src/objects/source-text-module.cc
+index bb61d2722a5..723eaf7a428 100644
+--- a/src/objects/source-text-module.cc
++++ b/src/objects/source-text-module.cc
+@@ -884,12 +884,11 @@ Maybe<bool> SourceTextModule::AsyncModuleExecutionFulfilled(
+ 
+   // 12. For each Module m of sortedExecList, do
+   for (DirectHandle<SourceTextModule> m : exec_list) {
+-    // a. If m.[[Status]] is EVALUATED, then
+-    //   i. Assert: m.[[EvaluationError]] is not EMPTY.
+-    // (Holds by construction in V8 implementation.)
+-
+-    // b. Else if m.[[HasTLA]] is true, then
+-    if (m->has_toplevel_await()) {
++    if (m->status() == kErrored) {  // a. If m.[[Status]] is EVALUATED, then
++      // i. Assert: m.[[EvaluationError]] is not EMPTY.
++      DCHECK(!IsTheHole(m->exception(), isolate));
++    } else if (m->has_toplevel_await()) {  // b. Else if m.[[HasTLA]] is true,
++                                           // then
+       // i. Perform ExecuteAsyncModule(m).
+       //
+       // The execution may have been terminated and can not be resumed, so just
+@@ -904,14 +903,13 @@ Maybe<bool> SourceTextModule::AsyncModuleExecutionFulfilled(
+         // 1. Perform AsyncModuleExecutionRejected(m, result.[[Value]]).
+         AsyncModuleExecutionRejected(isolate, m, exception.ToHandleChecked());
+       } else {  // iii. Else,
+-        // 1. Set m.[[Status]] to EVALUATED.
+-        //
+-        // TODO(syg): Update comment after spec bug is fixed.
+-        // https://github.com/tc39/ecma262/issues/3356
++        // 1. Set m.[[AsyncEvaluation]] to false.
+         m->set_async_evaluation_ordinal(kAsyncEvaluateDidFinish);
++
++        // 2. Set m.[[Status]] to EVALUATED.
+         m->SetStatus(kEvaluated);
+ 
+-        // 2. If m.[[TopLevelCapability]] is not EMPTY, then
++        // 3. If m.[[TopLevelCapability]] is not EMPTY, then
+         if (!IsUndefined(m->top_level_capability(), isolate)) {
+           // a. Assert: m.[[CycleRoot]] and m are the same Module Record.
+           DCHECK_EQ(*m->GetCycleRoot(isolate), *m);
+@@ -1046,7 +1044,7 @@ Maybe<bool> SourceTextModule::ExecuteAsyncModule(
+   MaybeHandle<Object> ret =
+       InnerExecuteAsyncModule(isolate, module, capability);
+   if (ret.is_null()) {
+-    // The evaluation of async module can not throwing a JavaScript observable
++    // The evaluation of async module cannot throw a JavaScript observable
+     // exception.
+     DCHECK_IMPLIES(v8_flags.strict_termination_checks,
+                    isolate->is_execution_terminating());
+diff --git a/test/mjsunit/harmony/modules-async-error-due-to-import.js b/test/mjsunit/harmony/modules-async-error-due-to-import.js
+new file mode 100644
+index 00000000000..247754fe38f
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-async-error-due-to-import.js
+@@ -0,0 +1,6 @@
++// Copyright 2024 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++assertThrowsAsync(
++    import('./modules-skip-async-errors-due-to-import-entry.mjs'), Error);
+diff --git a/test/mjsunit/harmony/modules-skip-async-errors-due-to-import-entry.mjs b/test/mjsunit/harmony/modules-skip-async-errors-due-to-import-entry.mjs
+new file mode 100644
+index 00000000000..8075e4d3655
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-skip-async-errors-due-to-import-entry.mjs
+@@ -0,0 +1,7 @@
++// Copyright 2024 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++import './modules-skip-async-mid-with-sync-error.js'
++
++await 0;
+diff --git a/test/mjsunit/harmony/modules-skip-async-leaf-with-tla.mjs b/test/mjsunit/harmony/modules-skip-async-leaf-with-tla.mjs
+new file mode 100644
+index 00000000000..515dec6b15a
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-skip-async-leaf-with-tla.mjs
+@@ -0,0 +1,5 @@
++// Copyright 2024 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++await 0;
+diff --git a/test/mjsunit/harmony/modules-skip-async-mid-with-sync-error.js b/test/mjsunit/harmony/modules-skip-async-mid-with-sync-error.js
+new file mode 100644
+index 00000000000..aae6a57936e
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-skip-async-mid-with-sync-error.js
+@@ -0,0 +1,7 @@
++// Copyright 2024 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++import './modules-skip-async-leaf-with-tla.mjs'
++
++throw new Error('error in module without TLA');
+-- 
+2.46.0
+

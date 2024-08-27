@@ -1,0 +1,984 @@
+From db19559423398806c8816276c266dd2b906bb244 Mon Sep 17 00:00:00 2001
+From: Shu-yu Guo <syg@chromium.org>
+Date: Fri, 23 Aug 2024 13:31:15 -0700
+Subject: [PATCH] [parser] Stop rewriting module bodies
+
+Before top-level await, Node requested that the then synchronous
+Module::Evaluate return the completion value instead always
+undefined [1]. This was done via Rewriter. After top-level await,
+Module::Evaluate always returns a promise, so this rewrite is useless.
+
+This also fixes a bug between the interaction of completion value
+rewriting and moving the async function AST rewrite into the bytecode
+generator. Because module bodies are internally async functions, the
+completion value rewriter is currently causing the loading promise to be
+resolved with completion value of the module body's statement list.
+
+[1] https://chromium-review.googlesource.com/c/v8/v8/+/446846
+
+Bug: 358404372
+Change-Id: I93409a618b3efff70e913138948ac8a6d123cb59
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/5809490
+Commit-Queue: Shu-yu Guo <syg@chromium.org>
+Reviewed-by: Leszek Swirski <leszeks@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#95813}
+---
+ src/parsing/rewriter.cc                       |  19 +-
+ .../bytecode_expectations/AsyncModules.golden | 232 ++++++-------
+ .../bytecode_expectations/Modules.golden      | 319 +++++++++---------
+ 3 files changed, 272 insertions(+), 298 deletions(-)
+
+diff --git a/src/parsing/rewriter.cc b/src/parsing/rewriter.cc
+index 317ef271322..cd2064949b9 100644
+--- a/src/parsing/rewriter.cc
++++ b/src/parsing/rewriter.cc
+@@ -394,9 +394,8 @@ bool Rewriter::Rewrite(ParseInfo* info) {
+   DCHECK_NOT_NULL(scope);
+   DCHECK_EQ(scope, scope->GetClosureScope());
+ 
+-  if (scope->is_repl_mode_scope()) return true;
+-  if (!(scope->is_script_scope() || scope->is_eval_scope() ||
+-        scope->is_module_scope())) {
++  if (scope->is_repl_mode_scope() ||
++      !(scope->is_script_scope() || scope->is_eval_scope())) {
+     return true;
+   }
+ 
+@@ -410,7 +409,6 @@ std::optional<VariableProxy*> Rewriter::RewriteBody(
+   DisallowHandleAllocation no_handles;
+   DisallowHandleDereference no_deref;
+ 
+-  DCHECK_IMPLIES(scope->is_module_scope(), !body->is_empty());
+   if (!body->is_empty()) {
+     Variable* result = scope->AsDeclarationScope()->NewTemporary(
+         info->ast_value_factory()->dot_result_string());
+@@ -418,23 +416,14 @@ std::optional<VariableProxy*> Rewriter::RewriteBody(
+                         result, info->ast_value_factory(), info->zone());
+     processor.Process(body);
+ 
+-    DCHECK_IMPLIES(scope->is_module_scope(), processor.result_assigned());
+     if (processor.result_assigned()) {
+       int pos = kNoSourcePosition;
+       VariableProxy* result_value =
+           processor.factory()->NewVariableProxy(result, pos);
+       if (!info->flags().is_repl_mode()) {
+         Statement* result_statement;
+-        if (scope->is_module_scope() &&
+-            IsModuleWithTopLevelAwait(
+-                scope->AsDeclarationScope()->function_kind())) {
+-          result_statement = processor.factory()->NewAsyncReturnStatement(
+-              result_value, pos,
+-              ReturnStatement::kFunctionLiteralReturnPosition);
+-        } else {
+-          result_statement =
+-              processor.factory()->NewReturnStatement(result_value, pos);
+-        }
++        result_statement =
++            processor.factory()->NewReturnStatement(result_value, pos);
+         body->Add(result_statement, info->zone());
+       }
+       return result_value;
+diff --git a/test/unittests/interpreter/bytecode_expectations/AsyncModules.golden b/test/unittests/interpreter/bytecode_expectations/AsyncModules.golden
+index d5b973225be..3bf28007bb6 100644
+--- a/test/unittests/interpreter/bytecode_expectations/AsyncModules.golden
++++ b/test/unittests/interpreter/bytecode_expectations/AsyncModules.golden
+@@ -11,48 +11,48 @@ top level: yes
+ snippet: "
+   await 42;
+ "
+-frame size: 5
++frame size: 4
+ parameter count: 1
+-bytecode array length: 100
++bytecode array length: 96
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(2),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(1), U8(2),
+                 B(Star0),
+-                B(Mov), R(context), R(2),
++                B(Mov), R(context), R(1),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+-                B(Star3),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(2), U8(2), I8(0),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(Return),
+   /*    0 S> */ B(LdaSmi), I8(42),
+-                B(Star4),
+-                B(Mov), R(0), R(3),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(3), U8(2),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(1),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+                 B(Star3),
++                B(Mov), R(0), R(2),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(2), U8(2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(1),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+-                B(Star4),
++                B(Star3),
+                 B(LdaZero),
+-                B(TestReferenceEqual), R(4),
++                B(TestReferenceEqual), R(3),
+                 B(JumpIfTrue), U8(5),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(ReThrow),
+-                B(Mov), R(3), R(1),
+-                B(Mov), R(0), R(3),
+-                B(Mov), R(1), R(4),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(3), U8(2),
++                B(LdaUndefined),
++                B(Star3),
++                B(Mov), R(0), R(2),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(2), U8(2),
+   /*   10 S> */ B(Return),
+-                B(Star4),
+-                B(Mov), R(0), R(3),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(3), U8(2),
++                B(Star3),
++                B(Mov), R(0), R(2),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(2), U8(2),
+                 B(Return),
+ ]
+ constant pool: [
+@@ -62,58 +62,58 @@ constant pool: [
+   Smi [7],
+ ]
+ handlers: [
+-  [18, 91, 91],
++  [18, 87, 87],
+ ]
+ 
+ ---
+ snippet: "
+   await import(\"foo\");
+ "
+-frame size: 5
++frame size: 4
+ parameter count: 1
+-bytecode array length: 109
++bytecode array length: 105
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(2),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(1), U8(2),
+                 B(Star0),
+-                B(Mov), R(context), R(2),
++                B(Mov), R(context), R(1),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+-                B(Star3),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(2), U8(2), I8(0),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(Return),
+   /*    0 S> */ B(LdaConstant), U8(4),
+-                B(Star4),
+-                B(Mov), R(closure), R(3),
+-                B(CallRuntime), U16(Runtime::kDynamicImportCall), R(3), U8(2),
+-                B(Star4),
+-                B(Mov), R(0), R(3),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(3), U8(2),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(1),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+                 B(Star3),
++                B(Mov), R(closure), R(2),
++                B(CallRuntime), U16(Runtime::kDynamicImportCall), R(2), U8(2),
++                B(Star3),
++                B(Mov), R(0), R(2),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(2), U8(2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(1),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+-                B(Star4),
++                B(Star3),
+                 B(LdaZero),
+-                B(TestReferenceEqual), R(4),
++                B(TestReferenceEqual), R(3),
+                 B(JumpIfTrue), U8(5),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(ReThrow),
+-                B(Mov), R(3), R(1),
+-                B(Mov), R(0), R(3),
+-                B(Mov), R(1), R(4),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(3), U8(2),
++                B(LdaUndefined),
++                B(Star3),
++                B(Mov), R(0), R(2),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(2), U8(2),
+   /*   21 S> */ B(Return),
+-                B(Star4),
+-                B(Mov), R(0), R(3),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(3), U8(2),
++                B(Star3),
++                B(Mov), R(0), R(2),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(2), U8(2),
+                 B(Return),
+ ]
+ constant pool: [
+@@ -124,7 +124,7 @@ constant pool: [
+   INTERNALIZED_ONE_BYTE_STRING_TYPE ["foo"],
+ ]
+ handlers: [
+-  [18, 100, 100],
++  [18, 96, 96],
+ ]
+ 
+ ---
+@@ -135,51 +135,51 @@ snippet: "
+   }
+   foo();
+ "
+-frame size: 6
++frame size: 5
+ parameter count: 1
+-bytecode array length: 106
++bytecode array length: 104
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(2),
+-                B(Mov), R(closure), R(3),
+-                B(Mov), R(this), R(4),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(3), U8(2),
++                B(Mov), R(closure), R(2),
++                B(Mov), R(this), R(3),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(2), U8(2),
+                 B(Star0),
+                 B(CreateClosure), U8(2), U8(0), U8(0),
+                 B(Star1),
+-                B(Mov), R(context), R(3),
++                B(Mov), R(context), R(2),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(4), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(4),
+-                B(Star4),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(3),
++                B(Star3),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(3), U8(2), I8(0),
+-                B(Ldar), R(4),
++                B(Ldar), R(3),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(4),
++                B(Ldar), R(3),
+                 B(Return),
+   /*    0 S> */ B(LdaSmi), I8(42),
+-                B(Star5),
+-                B(Mov), R(0), R(4),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(4), U8(2),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(4), U8(1),
+-                B(ResumeGenerator), R(0), R(0), U8(4),
+                 B(Star4),
++                B(Mov), R(0), R(3),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(3), U8(2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(1),
++                B(ResumeGenerator), R(0), R(0), U8(3),
++                B(Star3),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+-                B(Star5),
++                B(Star4),
+                 B(LdaZero),
+-                B(TestReferenceEqual), R(5),
++                B(TestReferenceEqual), R(4),
+                 B(JumpIfTrue), U8(5),
+-                B(Ldar), R(4),
++                B(Ldar), R(3),
+                 B(ReThrow),
+   /*   47 S> */ B(CallUndefinedReceiver0), R(1), U8(0),
+-                B(Star2),
+-                B(Mov), R(0), R(4),
+-                B(Mov), R(2), R(5),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(4), U8(2),
++                B(LdaUndefined),
++                B(Star4),
++                B(Mov), R(0), R(3),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(3), U8(2),
+   /*   54 S> */ B(Return),
+-                B(Star5),
+-                B(Mov), R(0), R(4),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(4), U8(2),
++                B(Star4),
++                B(Mov), R(0), R(3),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(3), U8(2),
+                 B(Return),
+ ]
+ constant pool: [
+@@ -190,7 +190,7 @@ constant pool: [
+   Smi [7],
+ ]
+ handlers: [
+-  [23, 97, 97],
++  [23, 95, 95],
+ ]
+ 
+ ---
+@@ -198,55 +198,55 @@ snippet: "
+   import * as foo from \"bar\";
+   await import(\"goo\");
+ "
+-frame size: 6
++frame size: 5
+ parameter count: 1
+-bytecode array length: 117
++bytecode array length: 113
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(2),
+-                B(Mov), R(closure), R(3),
+-                B(Mov), R(this), R(4),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(3), U8(2),
++                B(Mov), R(closure), R(2),
++                B(Mov), R(this), R(3),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionEnter), R(2), U8(2),
+                 B(Star0),
+                 B(LdaZero),
+-                B(Star3),
+-                B(CallRuntime), U16(Runtime::kGetModuleNamespace), R(3), U8(1),
++                B(Star2),
++                B(CallRuntime), U16(Runtime::kGetModuleNamespace), R(2), U8(1),
+                 B(Star1),
+-                B(Mov), R(context), R(3),
++                B(Mov), R(context), R(2),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(4), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(4),
+-                B(Star4),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(3),
++                B(Star3),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(2), U8(2), I8(0),
+-                B(Ldar), R(4),
++                B(Ldar), R(3),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(4),
++                B(Ldar), R(3),
+                 B(Return),
+   /*   28 S> */ B(LdaConstant), U8(4),
+-                B(Star5),
+-                B(Mov), R(closure), R(4),
+-                B(CallRuntime), U16(Runtime::kDynamicImportCall), R(4), U8(2),
+-                B(Star5),
+-                B(Mov), R(0), R(4),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(4), U8(2),
+-  /*   28 E> */ B(SuspendGenerator), R(0), R(0), U8(4), U8(1),
+-                B(ResumeGenerator), R(0), R(0), U8(4),
+                 B(Star4),
++                B(Mov), R(closure), R(3),
++                B(CallRuntime), U16(Runtime::kDynamicImportCall), R(3), U8(2),
++                B(Star4),
++                B(Mov), R(0), R(3),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionAwait), R(3), U8(2),
++  /*   28 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(1),
++                B(ResumeGenerator), R(0), R(0), U8(3),
++                B(Star3),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+-                B(Star5),
++                B(Star4),
+                 B(LdaZero),
+-                B(TestReferenceEqual), R(5),
++                B(TestReferenceEqual), R(4),
+                 B(JumpIfTrue), U8(5),
+-                B(Ldar), R(4),
++                B(Ldar), R(3),
+                 B(ReThrow),
+-                B(Mov), R(4), R(2),
+-                B(Mov), R(0), R(4),
+-                B(Mov), R(2), R(5),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(4), U8(2),
++                B(LdaUndefined),
++                B(Star4),
++                B(Mov), R(0), R(3),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionResolve), R(3), U8(2),
+   /*   49 S> */ B(Return),
+-                B(Star5),
+-                B(Mov), R(0), R(4),
+-                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(4), U8(2),
++                B(Star4),
++                B(Mov), R(0), R(3),
++                B(InvokeIntrinsic), U8(Runtime::k_AsyncFunctionReject), R(3), U8(2),
+                 B(Return),
+ ]
+ constant pool: [
+@@ -257,6 +257,6 @@ constant pool: [
+   INTERNALIZED_ONE_BYTE_STRING_TYPE ["goo"],
+ ]
+ handlers: [
+-  [26, 108, 108],
++  [26, 104, 104],
+ ]
+ 
+diff --git a/test/unittests/interpreter/bytecode_expectations/Modules.golden b/test/unittests/interpreter/bytecode_expectations/Modules.golden
+index 01d007c70d9..77b8b9e1e14 100644
+--- a/test/unittests/interpreter/bytecode_expectations/Modules.golden
++++ b/test/unittests/interpreter/bytecode_expectations/Modules.golden
+@@ -11,26 +11,25 @@ top level: yes
+ snippet: "
+   import \"bar\";
+ "
+-frame size: 4
++frame size: 3
+ parameter count: 1
+-bytecode array length: 45
++bytecode array length: 41
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+                 B(Star0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(2),
+-                B(Star2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(1), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(1),
++                B(Star1),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(1), U8(2), I8(0),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(2),
+-                B(Return),
+-                B(Mov), R(2), R(1),
+                 B(Ldar), R(1),
++                B(Return),
++                B(LdaUndefined),
+   /*   14 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -45,26 +44,25 @@ handlers: [
+ snippet: "
+   import {foo} from \"bar\";
+ "
+-frame size: 4
++frame size: 3
+ parameter count: 1
+-bytecode array length: 45
++bytecode array length: 41
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+                 B(Star0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(2),
+-                B(Star2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(1), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(1),
++                B(Star1),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(1), U8(2), I8(0),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(2),
+-                B(Return),
+-                B(Mov), R(2), R(1),
+                 B(Ldar), R(1),
++                B(Return),
++                B(LdaUndefined),
+   /*   25 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -81,38 +79,38 @@ snippet: "
+   goo(42);
+   { let x; { goo(42) } };
+ "
+-frame size: 5
++frame size: 4
+ parameter count: 1
+ bytecode array length: 67
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(3),
+-                B(Mov), R(this), R(4),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(3), U8(2),
++                B(Mov), R(closure), R(2),
++                B(Mov), R(this), R(3),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
+                 B(Star0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+-                B(Star3),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(1), U8(2), I8(0),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(Return),
+   /*   32 S> */ B(LdaModuleVariable), I8(-1), U8(0),
+                 B(ThrowReferenceErrorIfHole), U8(3),
+-                B(Star3),
++                B(Star2),
+                 B(LdaSmi), I8(42),
+-                B(Star4),
+-  /*   32 E> */ B(CallUndefinedReceiver1), R(3), R(4), U8(0),
++                B(Star3),
++  /*   32 E> */ B(CallUndefinedReceiver1), R(2), R(3), U8(0),
+   /*   47 S> */ B(LdaUndefined),
+-                B(Star2),
++                B(Star1),
+   /*   52 S> */ B(LdaModuleVariable), I8(-1), U8(0),
+-                B(Star3),
++                B(Star2),
+                 B(LdaSmi), I8(42),
+-                B(Star4),
+-  /*   52 E> */ B(CallUndefinedReceiver1), R(3), R(4), U8(2),
+-                B(Star1),
++                B(Star3),
++  /*   52 E> */ B(CallUndefinedReceiver1), R(2), R(3), U8(2),
++                B(LdaUndefined),
+   /*   65 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -130,23 +128,23 @@ snippet: "
+   foo++;
+   { let x; { foo++ } };
+ "
+-frame size: 5
++frame size: 4
+ parameter count: 1
+-bytecode array length: 71
++bytecode array length: 64
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(3),
+-                B(Mov), R(this), R(4),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(3), U8(2),
++                B(Mov), R(closure), R(2),
++                B(Mov), R(this), R(3),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
+                 B(Star0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+-                B(Star3),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(1), U8(2), I8(0),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(Return),
+   /*   17 S> */ B(LdaSmi), I8(42),
+   /*   17 E> */ B(StaModuleVariable), I8(1), U8(0),
+@@ -154,14 +152,11 @@ bytecodes: [
+                 B(Inc), U8(0),
+   /*   24 E> */ B(StaModuleVariable), I8(1), U8(0),
+   /*   34 S> */ B(LdaUndefined),
+-                B(Star2),
++                B(Star1),
+   /*   39 S> */ B(LdaModuleVariable), I8(1), U8(0),
+-                B(ToNumeric), U8(1),
+-                B(Star3),
+                 B(Inc), U8(1),
+   /*   42 E> */ B(StaModuleVariable), I8(1), U8(0),
+-                B(Mov), R(3), R(1),
+-                B(Ldar), R(1),
++                B(LdaUndefined),
+   /*   50 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -178,28 +173,28 @@ snippet: "
+   foo++;
+   { let x; { foo++ } };
+ "
+-frame size: 5
++frame size: 4
+ parameter count: 1
+-bytecode array length: 84
++bytecode array length: 77
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(3),
+-                B(Mov), R(this), R(4),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(3), U8(2),
++                B(Mov), R(closure), R(2),
++                B(Mov), R(this), R(3),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
+                 B(Star0),
+                 B(LdaConstant), U8(1),
+-                B(Star3),
+-                B(Mov), R(closure), R(4),
+-                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(3), U8(2),
++                B(Star2),
++                B(Mov), R(closure), R(3),
++                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(2), U8(2),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+-                B(Star3),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(2), U8(2), I8(0),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(Return),
+   /*   17 S> */ B(LdaSmi), I8(42),
+   /*   17 E> */ B(StaModuleVariable), I8(1), U8(0),
+@@ -207,14 +202,11 @@ bytecodes: [
+                 B(Inc), U8(0),
+   /*   24 E> */ B(StaModuleVariable), I8(1), U8(0),
+   /*   34 S> */ B(LdaUndefined),
+-                B(Star2),
++                B(Star1),
+   /*   39 S> */ B(LdaModuleVariable), I8(1), U8(0),
+-                B(ToNumeric), U8(1),
+-                B(Star3),
+                 B(Inc), U8(1),
+   /*   42 E> */ B(StaModuleVariable), I8(1), U8(0),
+-                B(Mov), R(3), R(1),
+-                B(Ldar), R(1),
++                B(LdaUndefined),
+   /*   50 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -232,28 +224,28 @@ snippet: "
+   foo++;
+   { let x; { foo++ } };
+ "
+-frame size: 5
++frame size: 4
+ parameter count: 1
+-bytecode array length: 88
++bytecode array length: 81
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(3),
+-                B(Mov), R(this), R(4),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(3), U8(2),
++                B(Mov), R(closure), R(2),
++                B(Mov), R(this), R(3),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
+                 B(Star0),
+                 B(LdaConstant), U8(1),
+-                B(Star3),
+-                B(Mov), R(closure), R(4),
+-                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(3), U8(2),
++                B(Star2),
++                B(Mov), R(closure), R(3),
++                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(2), U8(2),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+-                B(Star3),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(2), U8(2), I8(0),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(Return),
+   /*   19 S> */ B(LdaSmi), I8(42),
+   /*   19 E> */ B(StaModuleVariable), I8(1), U8(0),
+@@ -261,14 +253,11 @@ bytecodes: [
+                 B(Inc), U8(0),
+   /*   26 E> */ B(CallRuntime), U16(Runtime::kThrowConstAssignError), R(0), U8(0),
+   /*   36 S> */ B(LdaUndefined),
+-                B(Star2),
++                B(Star1),
+   /*   41 S> */ B(LdaModuleVariable), I8(1), U8(0),
+-                B(ToNumeric), U8(1),
+-                B(Star3),
+                 B(Inc), U8(1),
+   /*   44 E> */ B(CallRuntime), U16(Runtime::kThrowConstAssignError), R(0), U8(0),
+-                B(Mov), R(3), R(1),
+-                B(Ldar), R(1),
++                B(LdaUndefined),
+   /*   52 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -284,33 +273,32 @@ handlers: [
+ snippet: "
+   export default (function () {});
+ "
+-frame size: 4
++frame size: 3
+ parameter count: 1
+-bytecode array length: 65
++bytecode array length: 61
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+                 B(Star0),
+                 B(LdaConstant), U8(1),
+-                B(Star2),
+-                B(Mov), R(closure), R(3),
+-                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(2), U8(2),
++                B(Star1),
++                B(Mov), R(closure), R(2),
++                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(1), U8(2),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(2),
+-                B(Star2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(1), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(1),
++                B(Star1),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(2), U8(2), I8(0),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+                 B(Return),
+-                B(Mov), R(2), R(1),
+                 B(CreateClosure), U8(4), U8(0), U8(0),
+                 B(StaModuleVariable), I8(1), U8(0),
+-                B(Ldar), R(1),
++                B(LdaUndefined),
+   /*   33 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -327,41 +315,40 @@ handlers: [
+ snippet: "
+   export default (class {});
+ "
+-frame size: 6
++frame size: 5
+ parameter count: 1
+-bytecode array length: 81
++bytecode array length: 77
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+                 B(Star0),
+                 B(LdaConstant), U8(1),
+-                B(Star2),
+-                B(Mov), R(closure), R(3),
+-                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(2), U8(2),
++                B(Star1),
++                B(Mov), R(closure), R(2),
++                B(CallRuntime), U16(Runtime::kDeclareModuleExports), R(1), U8(2),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(2),
+-                B(Star2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(1), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(1),
++                B(Star1),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(2), U8(2), I8(0),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+                 B(Return),
+-                B(Mov), R(2), R(1),
+                 B(LdaTheHole),
+-                B(Star5),
++                B(Star4),
+                 B(CreateClosure), U8(5), U8(0), U8(0),
+-                B(Star2),
++                B(Star1),
+                 B(LdaConstant), U8(4),
+-                B(Star3),
+-                B(Mov), R(2), R(4),
+-                B(CallRuntime), U16(Runtime::kDefineClass), R(3), U8(3),
+-                B(Ldar), R(4),
++                B(Star2),
++                B(Mov), R(1), R(3),
++                B(CallRuntime), U16(Runtime::kDefineClass), R(2), U8(3),
++                B(Ldar), R(3),
+                 B(StaModuleVariable), I8(1), U8(0),
+-                B(Ldar), R(1),
++                B(LdaUndefined),
+   /*   27 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -379,26 +366,25 @@ handlers: [
+ snippet: "
+   export {foo as goo} from \"bar\"
+ "
+-frame size: 4
++frame size: 3
+ parameter count: 1
+-bytecode array length: 45
++bytecode array length: 41
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+                 B(Star0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(2),
+-                B(Star2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(1), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(1),
++                B(Star1),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(1), U8(2), I8(0),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(2),
+-                B(Return),
+-                B(Mov), R(2), R(1),
+                 B(Ldar), R(1),
++                B(Return),
++                B(LdaUndefined),
+   /*   31 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -413,26 +399,25 @@ handlers: [
+ snippet: "
+   export * from \"bar\"
+ "
+-frame size: 4
++frame size: 3
+ parameter count: 1
+-bytecode array length: 45
++bytecode array length: 41
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(2),
+-                B(Mov), R(this), R(3),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
++                B(Mov), R(closure), R(1),
++                B(Mov), R(this), R(2),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+                 B(Star0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(2),
+-                B(Star2),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(1), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(1),
++                B(Star1),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(1), U8(2), I8(0),
+-                B(Ldar), R(2),
++                B(Ldar), R(1),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(2),
+-                B(Return),
+-                B(Mov), R(2), R(1),
+                 B(Ldar), R(1),
++                B(Return),
++                B(LdaUndefined),
+   /*   20 S> */ B(Return),
+ ]
+ constant pool: [
+@@ -448,35 +433,35 @@ snippet: "
+   import * as foo from \"bar\"
+   foo.f(foo, foo.x);
+ "
+-frame size: 7
++frame size: 6
+ parameter count: 1
+ bytecode array length: 67
+ bytecodes: [
+                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
+-                B(Mov), R(closure), R(3),
+-                B(Mov), R(this), R(4),
+-  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(3), U8(2),
++                B(Mov), R(closure), R(2),
++                B(Mov), R(this), R(3),
++  /*    0 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(2), U8(2),
+                 B(Star0),
+                 B(LdaZero),
+-                B(Star3),
+-                B(CallRuntime), U16(Runtime::kGetModuleNamespace), R(3), U8(1),
++                B(Star2),
++                B(CallRuntime), U16(Runtime::kGetModuleNamespace), R(2), U8(1),
+                 B(Star1),
+                 B(Ldar), R(0),
+-  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(3), U8(0),
+-                B(ResumeGenerator), R(0), R(0), U8(3),
+-                B(Star3),
++  /*    0 E> */ B(SuspendGenerator), R(0), R(0), U8(2), U8(0),
++                B(ResumeGenerator), R(0), R(0), U8(2),
++                B(Star2),
+                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
+                 B(SwitchOnSmiNoFeedback), U8(1), U8(2), I8(0),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+   /*    0 E> */ B(Throw),
+-                B(Ldar), R(3),
++                B(Ldar), R(2),
+                 B(Return),
+   /*   31 S> */ B(GetNamedProperty), R(1), U8(3), U8(0),
+-                B(Star3),
+-  /*   42 E> */ B(GetNamedProperty), R(1), U8(4), U8(2),
+-                B(Star6),
+-  /*   31 E> */ B(CallProperty2), R(3), R(1), R(1), R(6), U8(4),
+                 B(Star2),
++  /*   42 E> */ B(GetNamedProperty), R(1), U8(4), U8(2),
++                B(Star5),
++  /*   31 E> */ B(CallProperty2), R(2), R(1), R(1), R(5), U8(4),
++                B(LdaUndefined),
+   /*   46 S> */ B(Return),
+ ]
+ constant pool: [
+-- 
+2.46.0
+
