@@ -1,0 +1,728 @@
+From e1b95e4e1f9016b88e3e8b412d647130139a070b Mon Sep 17 00:00:00 2001
+From: Andreas Haas <ahaas@chromium.org>
+Date: Wed, 25 Sep 2024 10:25:57 +0200
+Subject: [PATCH] Revert "[fastapi] Handle returns without type conversion to
+ tagged"
+
+This reverts commit 198db8e5fbc7d9719e53baf025aeadf0a8b5a441.
+
+Reason for revert: This CL regresses motionmark and makes it noisy (https://issues.chromium.org/issues/368997526)
+
+Original change's description:
+> [fastapi] Handle returns without type conversion to tagged
+>
+> So far, returns of fast API calls got converted unconditionally to
+> tagged. This meant that if the return type was float64, and the calling
+> function could handle a float64, there would still be a HeapNumber
+> allocation.
+>
+> With this CL, the result of the fast API call is marked with the correct
+> type, so that e.g. float64 returns only get converted to HeapNumbers
+> when necessary.
+>
+> Bug: 41497260
+> Change-Id: Ib027e2dbacf5ac12baba6f64d7bd45f99c5b95d2
+> Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/5832361
+> Commit-Queue: Andreas Haas <ahaas@chromium.org>
+> Reviewed-by: Nico Hartmann <nicohartmann@chromium.org>
+> Cr-Commit-Position: refs/heads/main@{#96032}
+
+Bug: 41497260
+Change-Id: I020e8c0315c076576c2f3e50cc564ba435f54360
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/5890285
+Reviewed-by: Nico Hartmann <nicohartmann@chromium.org>
+Commit-Queue: Andreas Haas <ahaas@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#96280}
+---
+ src/compiler/fast-api-calls.cc                |  12 +-
+ src/compiler/simplified-lowering.cc           |  50 +------
+ src/compiler/turboshaft/assembler.h           |  22 +--
+ .../fast-api-call-lowering-reducer.h          | 128 ++++++++----------
+ src/compiler/turboshaft/graph-builder.cc      |  75 +++-------
+ .../turboshaft/machine-lowering-phase.cc      |   2 +-
+ src/compiler/turboshaft/operations.cc         |   6 -
+ src/compiler/turboshaft/operations.h          |  47 +++----
+ src/compiler/typer.cc                         |  50 +------
+ 9 files changed, 100 insertions(+), 292 deletions(-)
+
+diff --git a/src/compiler/fast-api-calls.cc b/src/compiler/fast-api-calls.cc
+index fa551de3b2b..bcd1033cdec 100644
+--- a/src/compiler/fast-api-calls.cc
++++ b/src/compiler/fast-api-calls.cc
+@@ -139,16 +139,8 @@ bool CanOptimizeFastSignature(const CFunctionInfo* c_signature) {
+ #endif
+ 
+   for (unsigned int i = 0; i < c_signature->ArgumentCount(); ++i) {
+-    // So far we do not support string parameters for API functions with return
+-    // values. The reason is that with string parameters it is possible that the
+-    // backup regular API call is used but does not throw an exception. However,
+-    // return values of regular API calls cannot be handled correctly at the
+-    // moment.
+-    if (c_signature->ArgumentInfo(i).GetType() ==
+-            CTypeInfo::Type::kSeqOneByteString &&
+-        c_signature->ReturnInfo().GetType() != CTypeInfo::Type::kVoid) {
+-      return false;
+-    }
++    USE(i);
++
+ #ifdef V8_TARGET_ARCH_X64
+     // Clamp lowering in EffectControlLinearizer uses rounding.
+     uint8_t flags = uint8_t(c_signature->ArgumentInfo(i).GetFlags());
+diff --git a/src/compiler/simplified-lowering.cc b/src/compiler/simplified-lowering.cc
+index 895a63b455b..39abe854716 100644
+--- a/src/compiler/simplified-lowering.cc
++++ b/src/compiler/simplified-lowering.cc
+@@ -2055,55 +2055,7 @@ class RepresentationSelector {
+ 
+     // Effect and Control.
+     ProcessRemainingInputs<T>(node, value_input_count);
+-    if (op_params.c_functions().empty()) {
+-      SetOutput<T>(node, MachineRepresentation::kTagged);
+-      return;
+-    }
+-
+-    CTypeInfo return_type = op_params.c_functions()[0].signature->ReturnInfo();
+-    switch (return_type.GetType()) {
+-      case CTypeInfo::Type::kBool:
+-        SetOutput<T>(node, MachineRepresentation::kBit);
+-        return;
+-      case CTypeInfo::Type::kFloat32:
+-        SetOutput<T>(node, MachineRepresentation::kFloat32);
+-        return;
+-      case CTypeInfo::Type::kFloat64:
+-        SetOutput<T>(node, MachineRepresentation::kFloat64);
+-        return;
+-      case CTypeInfo::Type::kInt32:
+-        SetOutput<T>(node, MachineRepresentation::kWord32);
+-        return;
+-      case CTypeInfo::Type::kInt64:
+-      case CTypeInfo::Type::kUint64:
+-        if (c_signature->GetInt64Representation() ==
+-            CFunctionInfo::Int64Representation::kBigInt) {
+-          SetOutput<T>(node, MachineRepresentation::kWord64);
+-          return;
+-        }
+-        DCHECK_EQ(c_signature->GetInt64Representation(),
+-                  CFunctionInfo::Int64Representation::kNumber);
+-        SetOutput<T>(node, MachineRepresentation::kFloat64);
+-        return;
+-      case CTypeInfo::Type::kSeqOneByteString:
+-        SetOutput<T>(node, MachineRepresentation::kTagged);
+-        return;
+-      case CTypeInfo::Type::kUint32:
+-        SetOutput<T>(node, MachineRepresentation::kWord32);
+-        return;
+-      case CTypeInfo::Type::kUint8:
+-        SetOutput<T>(node, MachineRepresentation::kWord8);
+-        return;
+-      case CTypeInfo::Type::kAny:
+-        // This type is only supposed to be used for parameters, not returns.
+-        UNREACHABLE();
+-      case CTypeInfo::Type::kPointer:
+-      case CTypeInfo::Type::kApiObject:
+-      case CTypeInfo::Type::kV8Value:
+-      case CTypeInfo::Type::kVoid:
+-        SetOutput<T>(node, MachineRepresentation::kTagged);
+-        return;
+-    }
++    SetOutput<T>(node, MachineRepresentation::kTagged);
+   }
+ 
+   template <Phase T>
+diff --git a/src/compiler/turboshaft/assembler.h b/src/compiler/turboshaft/assembler.h
+index 86b8b99c013..a6b55d1eee6 100644
+--- a/src/compiler/turboshaft/assembler.h
++++ b/src/compiler/turboshaft/assembler.h
+@@ -1289,23 +1289,6 @@ class GenericReducerBase : public ReducerBaseForwarder<Next> {
+                             effects);
+   }
+ 
+-  OpIndex REDUCE(FastApiCall)(
+-      V<FrameState> frame_state, V<Object> data_argument, V<Context> context,
+-      base::Vector<const OpIndex> arguments,
+-      const FastApiCallParameters* parameters,
+-      base::Vector<const RegisterRepresentation> out_reps) {
+-    OpIndex raw_call = Base::ReduceFastApiCall(
+-        frame_state, data_argument, context, arguments, parameters, out_reps);
+-    bool has_catch_block = CatchIfInCatchScope(raw_call);
+-    return ReduceDidntThrow(raw_call, has_catch_block,
+-                            &Asm()
+-                                 .output_graph()
+-                                 .Get(raw_call)
+-                                 .template Cast<FastApiCallOp>()
+-                                 .out_reps,
+-                            OpEffects().CanCallAnything());
+-  }
+-
+ #define REDUCE_THROWING_OP(Name)                                             \
+   template <typename... Args>                                                \
+   V<Any> Reduce##Name(Args... args) {                                        \
+@@ -4698,10 +4681,9 @@ class TurboshaftAssemblerOpInterface
+   OpIndex FastApiCall(V<turboshaft::FrameState> frame_state,
+                       V<Object> data_argument, V<Context> context,
+                       base::Vector<const OpIndex> arguments,
+-                      const FastApiCallParameters* parameters,
+-                      base::Vector<const RegisterRepresentation> out_reps) {
++                      const FastApiCallParameters* parameters) {
+     return ReduceIfReachableFastApiCall(frame_state, data_argument, context,
+-                                        arguments, parameters, out_reps);
++                                        arguments, parameters);
+   }
+ 
+   void RuntimeAbort(AbortReason reason) {
+diff --git a/src/compiler/turboshaft/fast-api-call-lowering-reducer.h b/src/compiler/turboshaft/fast-api-call-lowering-reducer.h
+index 1d896660b8c..0132bfc9f66 100644
+--- a/src/compiler/turboshaft/fast-api-call-lowering-reducer.h
++++ b/src/compiler/turboshaft/fast-api-call-lowering-reducer.h
+@@ -24,11 +24,10 @@ class FastApiCallLoweringReducer : public Next {
+  public:
+   TURBOSHAFT_REDUCER_BOILERPLATE(FastApiCallLowering)
+ 
+-  OpIndex REDUCE(FastApiCall)(
+-      V<FrameState> frame_state, V<Object> data_argument, V<Context> context,
+-      base::Vector<const OpIndex> arguments,
+-      const FastApiCallParameters* parameters,
+-      base::Vector<const RegisterRepresentation> out_reps) {
++  OpIndex REDUCE(FastApiCall)(V<FrameState> frame_state,
++                              V<Object> data_argument, V<Context> context,
++                              base::Vector<const OpIndex> arguments,
++                              const FastApiCallParameters* parameters) {
+     const auto& c_functions = parameters->c_functions;
+     const auto& c_signature = parameters->c_signature();
+     const int c_arg_count = c_signature->ArgumentCount();
+@@ -36,25 +35,7 @@ class FastApiCallLoweringReducer : public Next {
+     const auto& resolution_result = parameters->resolution_result;
+ 
+     Label<> handle_error(this);
+-    Label<Word32> done(this);
+-    MachineType result_type =
+-        MachineType::TypeForCType(c_signature->ReturnInfo());
+-    if (result_type == MachineType::Pointer()) {
+-      result_type = MachineType::TaggedPointer();
+-    } else if (result_type.representation() == MachineRepresentation::kWord64) {
+-      if (c_signature->GetInt64Representation() ==
+-          CFunctionInfo::Int64Representation::kBigInt) {
+-        // In the end we are only interested in the register representation, and
+-        // that is the same for both Int64 and Uint64.
+-        result_type = MachineType::Int64();
+-      } else {
+-        DCHECK_EQ(c_signature->GetInt64Representation(),
+-                  CFunctionInfo::Int64Representation::kNumber);
+-        result_type = MachineType::Float64();
+-      }
+-    }
+-    Variable result =
+-        __ NewVariable(RegisterRepresentation::FromMachineType(result_type));
++    Label<Word32, Object> done(this);
+ 
+     OpIndex callee;
+     base::SmallVector<OpIndex, 16> args;
+@@ -89,9 +70,7 @@ class FastApiCallLoweringReducer : public Next {
+       MachineSignature::Builder builder(
+           __ graph_zone(), 1,
+           c_arg_count + (c_signature->HasOptions() ? 1 : 0));
+-
+       builder.AddReturn(MachineType::TypeForCType(c_signature->ReturnInfo()));
+-
+       for (int i = 0; i < c_arg_count; ++i) {
+         CTypeInfo type = c_signature->ArgumentInfo(i);
+         MachineType machine_type =
+@@ -146,28 +125,27 @@ class FastApiCallLoweringReducer : public Next {
+                       __ HeapConstant(isolate_->factory()->the_hole_value()))),
+                   trigger_exception);
+ 
+-      V<Any> fast_call_result = ConvertReturnValue(c_signature, c_call_result);
+-      __ SetVariable(result, fast_call_result);
++      V<Object> fast_call_result =
++          ConvertReturnValue(c_signature, c_call_result);
+ 
+-      GOTO(done, FastApiCallOp::kSuccessValue);
++      GOTO(done, FastApiCallOp::kSuccessValue, fast_call_result);
+       BIND(trigger_exception);
+       __ template CallRuntime<
+           typename RuntimeCallDescriptor::PropagateException>(
+           isolate_, frame_state, __ NoContextConstant(), LazyDeoptOnThrow::kNo,
+           {});
+ 
+-      __ Unreachable();
++      GOTO(done, FastApiCallOp::kFailureValue, __ TagSmi(0));
+     }
+ 
+     if (BIND(handle_error)) {
+-      __ SetVariable(result, DefaultReturnValue(c_signature));
+       // We pass Tagged<Smi>(0) as the value here, although this should never be
+       // visible when calling code reacts to `kFailureValue` properly.
+-      GOTO(done, FastApiCallOp::kFailureValue);
++      GOTO(done, FastApiCallOp::kFailureValue, __ TagSmi(0));
+     }
+ 
+-    BIND(done, state);
+-    return __ Tuple(state, __ GetVariable(result));
++    BIND(done, state, value);
++    return __ Tuple(state, value);
+   }
+ 
+  private:
+@@ -506,71 +484,75 @@ class FastApiCallLoweringReducer : public Next {
+     return stack_slot;
+   }
+ 
+-  V<Any> DefaultReturnValue(const CFunctionInfo* c_signature) {
+-    switch (c_signature->ReturnInfo().GetType()) {
+-      case CTypeInfo::Type::kVoid:
+-        return __ HeapConstant(factory_->undefined_value());
+-      case CTypeInfo::Type::kBool:
+-      case CTypeInfo::Type::kInt32:
+-      case CTypeInfo::Type::kUint32:
+-        return __ Word32Constant(0);
+-      case CTypeInfo::Type::kInt64:
+-      case CTypeInfo::Type::kUint64:
+-        return __ Word64Constant(int64_t{0});
+-      case CTypeInfo::Type::kFloat32:
+-        return __ Float32Constant(0);
+-      case CTypeInfo::Type::kFloat64:
+-        return __ Float64Constant(0);
+-      case CTypeInfo::Type::kPointer:
+-        return __ HeapConstant(factory_->undefined_value());
+-      case CTypeInfo::Type::kAny:
+-      case CTypeInfo::Type::kSeqOneByteString:
+-      case CTypeInfo::Type::kV8Value:
+-      case CTypeInfo::Type::kApiObject:
+-      case CTypeInfo::Type::kUint8:
+-        UNREACHABLE();
+-    }
+-  }
+-
+-  V<Any> ConvertReturnValue(const CFunctionInfo* c_signature, OpIndex result) {
++  V<Object> ConvertReturnValue(const CFunctionInfo* c_signature,
++                               OpIndex result) {
+     switch (c_signature->ReturnInfo().GetType()) {
+       case CTypeInfo::Type::kVoid:
+         return __ HeapConstant(factory_->undefined_value());
+       case CTypeInfo::Type::kBool:
+         static_assert(sizeof(bool) == 1, "unsupported bool size");
+-        return __ Word32BitwiseAnd(result, __ Word32Constant(0xFF));
++        return __ ConvertWord32ToBoolean(
++            __ Word32BitwiseAnd(result, __ Word32Constant(0xFF)));
+       case CTypeInfo::Type::kInt32:
++        return __ ConvertInt32ToNumber(result);
+       case CTypeInfo::Type::kUint32:
+-      case CTypeInfo::Type::kFloat32:
+-      case CTypeInfo::Type::kFloat64:
+-        return result;
++        return __ ConvertUint32ToNumber(result);
+       case CTypeInfo::Type::kInt64: {
+         CFunctionInfo::Int64Representation repr =
+             c_signature->GetInt64Representation();
+         if (repr == CFunctionInfo::Int64Representation::kBigInt) {
+-          return result;
++          return __ ConvertUntaggedToJSPrimitive(
++              result, ConvertUntaggedToJSPrimitiveOp::JSPrimitiveKind::kBigInt,
++              RegisterRepresentation::Word64(),
++              ConvertUntaggedToJSPrimitiveOp::InputInterpretation::kSigned,
++              CheckForMinusZeroMode::kDontCheckForMinusZero);
++        } else if (repr == CFunctionInfo::Int64Representation::kNumber) {
++          return __ ConvertUntaggedToJSPrimitive(
++              result, ConvertUntaggedToJSPrimitiveOp::JSPrimitiveKind::kNumber,
++              RegisterRepresentation::Word64(),
++              ConvertUntaggedToJSPrimitiveOp::InputInterpretation::kSigned,
++              CheckForMinusZeroMode::kDontCheckForMinusZero);
++        } else {
++          UNREACHABLE();
+         }
+-        DCHECK_EQ(repr, CFunctionInfo::Int64Representation::kNumber);
+-        return __ ChangeInt64ToFloat64(result);
+       }
+       case CTypeInfo::Type::kUint64: {
+         CFunctionInfo::Int64Representation repr =
+             c_signature->GetInt64Representation();
+         if (repr == CFunctionInfo::Int64Representation::kBigInt) {
+-          return result;
++          return __ ConvertUntaggedToJSPrimitive(
++              result, ConvertUntaggedToJSPrimitiveOp::JSPrimitiveKind::kBigInt,
++              RegisterRepresentation::Word64(),
++              ConvertUntaggedToJSPrimitiveOp::InputInterpretation::kUnsigned,
++              CheckForMinusZeroMode::kDontCheckForMinusZero);
++        } else if (repr == CFunctionInfo::Int64Representation::kNumber) {
++          return __ ConvertUntaggedToJSPrimitive(
++              result, ConvertUntaggedToJSPrimitiveOp::JSPrimitiveKind::kNumber,
++              RegisterRepresentation::Word64(),
++              ConvertUntaggedToJSPrimitiveOp::InputInterpretation::kUnsigned,
++              CheckForMinusZeroMode::kDontCheckForMinusZero);
++        } else {
++          UNREACHABLE();
+         }
+-        DCHECK_EQ(repr, CFunctionInfo::Int64Representation::kNumber);
+-        return __ ChangeUint64ToFloat64(result);
+       }
+-
++      case CTypeInfo::Type::kFloat32:
++        return __ ConvertFloat64ToNumber(
++            __ ChangeFloat32ToFloat64(result),
++            CheckForMinusZeroMode::kCheckForMinusZero);
++      case CTypeInfo::Type::kFloat64:
++        return __ ConvertFloat64ToNumber(
++            result, CheckForMinusZeroMode::kCheckForMinusZero);
+       case CTypeInfo::Type::kPointer:
+         return BuildAllocateJSExternalObject(result);
+-      case CTypeInfo::Type::kAny:
+       case CTypeInfo::Type::kSeqOneByteString:
+       case CTypeInfo::Type::kV8Value:
+       case CTypeInfo::Type::kApiObject:
+       case CTypeInfo::Type::kUint8:
+         UNREACHABLE();
++      case CTypeInfo::Type::kAny:
++        return __ ConvertFloat64ToNumber(
++            __ ChangeInt64ToFloat64(result),
++            CheckForMinusZeroMode::kCheckForMinusZero);
+     }
+   }
+ 
+diff --git a/src/compiler/turboshaft/graph-builder.cc b/src/compiler/turboshaft/graph-builder.cc
+index 9bbfaeb73aa..dd9c0125070 100644
+--- a/src/compiler/turboshaft/graph-builder.cc
++++ b/src/compiler/turboshaft/graph-builder.cc
+@@ -37,7 +37,6 @@
+ #include "src/compiler/turboshaft/operations.h"
+ #include "src/compiler/turboshaft/phase.h"
+ #include "src/compiler/turboshaft/representations.h"
+-#include "src/compiler/turboshaft/variable-reducer.h"
+ #include "src/flags/flags.h"
+ #include "src/heap/factory-inl.h"
+ #include "src/objects/map.h"
+@@ -57,7 +56,7 @@ struct GraphBuilder {
+   Isolate* isolate;
+   JSHeapBroker* broker;
+   Zone* graph_zone;
+-  using AssemblerT = TSAssembler<ExplicitTruncationReducer, VariableReducer>;
++  using AssemblerT = TSAssembler<ExplicitTruncationReducer>;
+   AssemblerT assembler;
+   SourcePositionTable* source_positions;
+   NodeOriginTable* origins;
+@@ -2018,7 +2017,14 @@ OpIndex GraphBuilder::Process(
+               base::VectorOf(slow_call_arguments),
+               TSCallDescriptor::Create(params.descriptor(), CanThrow::kYes,
+                                        LazyDeoptOnThrow::kNo, __ graph_zone()));
+-          __ Unreachable();
++
++          if (is_final_control) {
++            // The `__ Call()` before has already created exceptional
++            // control flow and bound a new block for the success case. So we
++            // can just `Goto` the block that Turbofan designated as the
++            // `IfSuccess` successor.
++            __ Goto(Map(block->SuccessorAt(0)));
++          }
+           return result;
+         }
+       }
+@@ -2035,48 +2041,18 @@ OpIndex GraphBuilder::Process(
+       const FastApiCallParameters* parameters = FastApiCallParameters::Create(
+           c_functions, resolution_result, __ graph_zone());
+ 
+-      // There is one return in addition to the return value of the C function,
+-      // which indicates if a fast API call actually happened.
+-      CTypeInfo return_type = params.c_functions()[0].signature->ReturnInfo();
+-      bool return_is_void = return_type.GetType() == CTypeInfo::Type::kVoid;
+-      int return_count = 2;
+-
+-      const base::Vector<RegisterRepresentation> out_reps =
+-          graph_zone->AllocateVector<RegisterRepresentation>(return_count);
+-      out_reps[0] = RegisterRepresentation::Word32();
+-
+-      if (return_is_void ||
+-          return_type.GetType() == CTypeInfo::Type::kPointer) {
+-        out_reps[1] = RegisterRepresentation::Tagged();
+-      } else if (return_type.GetType() == CTypeInfo::Type::kInt64 ||
+-                 return_type.GetType() == CTypeInfo::Type::kUint64) {
+-        if (params.c_functions()[0].signature->GetInt64Representation() ==
+-            CFunctionInfo::Int64Representation::kBigInt) {
+-          out_reps[1] = RegisterRepresentation::Word64();
+-        } else {
+-          DCHECK_EQ(params.c_functions()[0].signature->GetInt64Representation(),
+-                    CFunctionInfo::Int64Representation::kNumber);
+-          out_reps[1] = RegisterRepresentation::Float64();
+-        }
+-      } else {
+-        out_reps[1] = RegisterRepresentation::FromMachineType(
+-            MachineType::TypeForCType(return_type));
+-      }
+-
+       Label<Object> done(this);
+ 
+-      // Allocate the out_reps vector in the zone, so that it lives through the
+-      // whole compilation.
+       V<Tuple<Word32, Any>> fast_call_result =
+           __ FastApiCall(dominating_frame_state, data_argument, context,
+-                         base::VectorOf(arguments), parameters, out_reps);
++                         base::VectorOf(arguments), parameters);
+ 
+       V<Word32> result_state = __ template Projection<0>(fast_call_result);
+-      V<Any> result_value =
+-          __ template Projection<1>(fast_call_result, out_reps[1]);
+ 
+-      IF (UNLIKELY(
+-              __ Word32Equal(result_state, FastApiCallOp::kFailureValue))) {
++      IF (LIKELY(__ Word32Equal(result_state, FastApiCallOp::kSuccessValue))) {
++        GOTO(done, V<Object>::Cast(__ template Projection<1>(
++                       fast_call_result, RegisterRepresentation::Tagged())));
++      } ELSE {
+         // We need to generate a fallback (both fast and slow call) in case:
+         // 1) the generated code might fail, in case e.g. a Smi was passed where
+         // a JSObject was expected and an error must be thrown or
+@@ -2084,27 +2060,14 @@ OpIndex GraphBuilder::Process(
+         // arg. None of the above usually holds true for Wasm functions with
+         // primitive types only, so we avoid generating an extra branch here.
+ 
+-        __ Call(
++        V<Object> slow_call_result = V<Object>::Cast(__ Call(
+             slow_call_callee, dominating_frame_state,
+             base::VectorOf(slow_call_arguments),
+             TSCallDescriptor::Create(params.descriptor(), CanThrow::kYes,
+-                                     LazyDeoptOnThrow::kNo, __ graph_zone()));
+-
+-        // Currently we cannot handle return values of regular API calls here.
+-        // Typically, regular API calls are only used when a parameter is
+-        // invalid, so that the correct exception can be thrown by the regular
+-        // API call. However, when a string is passed in the wrong format, the
+-        // string is still a valid value, and the regular API call will succeed,
+-        // even though a fast API call was not possible.
+-        // TODO(ahaas): This issue could be solved by converting the return
+-        // value of `__ CALL()` from Tagged to the correct type, and by
+-        // introducing a `Variable` of the correct type to use the result of the
+-        // regular API call and not unconditionally the return value of the fast
+-        // API call.
+-        if (!return_is_void) {
+-          __ Unreachable();
+-        }
++                                     LazyDeoptOnThrow::kNo, __ graph_zone())));
++        GOTO(done, slow_call_result);
+       }
++      BIND(done, result);
+       if (is_final_control) {
+         // The `__ FastApiCall()` before has already created exceptional control
+         // flow and bound a new block for the success case. So we can just
+@@ -2112,7 +2075,7 @@ OpIndex GraphBuilder::Process(
+         // successor.
+         __ Goto(Map(block->SuccessorAt(0)));
+       }
+-      return result_value;
++      return result;
+     }
+ 
+     case IrOpcode::kRuntimeAbort:
+diff --git a/src/compiler/turboshaft/machine-lowering-phase.cc b/src/compiler/turboshaft/machine-lowering-phase.cc
+index a9a1ab936d9..55b98bd079b 100644
+--- a/src/compiler/turboshaft/machine-lowering-phase.cc
++++ b/src/compiler/turboshaft/machine-lowering-phase.cc
+@@ -24,7 +24,7 @@ void MachineLoweringPhase::Run(PipelineData* data, Zone* temp_zone) {
+   // JSGenericLoweringReducer without requiring a whole phase just for that.
+   CopyingPhase<JSGenericLoweringReducer, DataViewLoweringReducer,
+                MachineLoweringReducer, FastApiCallLoweringReducer,
+-               VariableReducer, SelectLoweringReducer,
++               SelectLoweringReducer,
+                MachineOptimizationReducer>::Run(data, temp_zone);
+ }
+ 
+diff --git a/src/compiler/turboshaft/operations.cc b/src/compiler/turboshaft/operations.cc
+index 764ddf4fc4b..3d936ff8e06 100644
+--- a/src/compiler/turboshaft/operations.cc
++++ b/src/compiler/turboshaft/operations.cc
+@@ -135,7 +135,6 @@ bool ValidOpInputRep(
+   std::cerr << "Expected " << (expected_reps.size() > 1 ? "one of " : "")
+             << PrintCollection(expected_reps).WithoutBrackets() << " but found "
+             << input_rep << ".\n";
+-  std::cout << "Input: " << graph.Get(input) << "\n";
+   return false;
+ }
+ 
+@@ -831,11 +830,6 @@ void DidntThrowOp::Validate(const Graph& graph) const {
+       DCHECK_EQ(call_op.descriptor->out_reps, outputs_rep());
+       break;
+     }
+-    case Opcode::kFastApiCall: {
+-      auto& call_op = graph.Get(throwing_operation()).Cast<FastApiCallOp>();
+-      DCHECK_EQ(call_op.out_reps, outputs_rep());
+-      break;
+-    }
+ #define STATIC_OUTPUT_CASE(Name)                                           \
+   case Opcode::k##Name: {                                                  \
+     const Name##Op& op = graph.Get(throwing_operation()).Cast<Name##Op>(); \
+diff --git a/src/compiler/turboshaft/operations.h b/src/compiler/turboshaft/operations.h
+index b86eff17afe..94562524abb 100644
+--- a/src/compiler/turboshaft/operations.h
++++ b/src/compiler/turboshaft/operations.h
+@@ -412,14 +412,14 @@ inline constexpr bool IsBlockTerminator(Opcode opcode) {
+ 
+ // Operations that can throw and that have static output representations.
+ #define TURBOSHAFT_THROWING_STATIC_OUTPUTS_OPERATIONS_LIST(V) \
+-  TURBOSHAFT_JS_THROWING_OPERATION_LIST(V)
++  TURBOSHAFT_JS_THROWING_OPERATION_LIST(V)                    \
++  V(FastApiCall)
+ 
+ // This list repeats the operations that may throw and need to be followed by
+ // `DidntThrow`.
+ #define TURBOSHAFT_THROWING_OPERATIONS_LIST(V)          \
+   TURBOSHAFT_THROWING_STATIC_OUTPUTS_OPERATIONS_LIST(V) \
+-  V(Call)                                               \
+-  V(FastApiCall)
++  V(Call)
+ 
+ // Operations that need to be followed by `DidntThrowOp`.
+ inline constexpr bool MayThrow(Opcode opcode) {
+@@ -6267,8 +6267,14 @@ struct FastApiCallOp : OperationT<FastApiCallOp> {
+   static constexpr uint32_t kFailureValue = 0;
+ 
+   const FastApiCallParameters* parameters;
+-  base::Vector<const RegisterRepresentation> out_reps;
+-  LazyDeoptOnThrow lazy_deopt_on_throw;
++
++  // FastApiCallOp has two outputs so far:
++  // (1) a `should_fallback` flag, indicating that a slow call should be done;
++  // (2) the actual return value, which is always tagged.
++  // TODO(ahaas) Remove the `should_fallback` flag once fast api functions don't
++  // use it anymore.
++  THROWING_OP_BOILERPLATE(RegisterRepresentation::Word32(),
++                          RegisterRepresentation::Tagged())
+ 
+   static constexpr OpEffects effects = OpEffects().CanCallAnything();
+ 
+@@ -6276,9 +6282,6 @@ struct FastApiCallOp : OperationT<FastApiCallOp> {
+   // argument, and the context.
+   static constexpr int kNumNonParamInputs = 3;
+ 
+-  // The outputs are produced by the `DidntThrow` operation.
+-  base::Vector<const RegisterRepresentation> outputs_rep() const { return {}; }
+-
+   base::Vector<const MaybeRegisterRepresentation> inputs_rep(
+       ZoneVector<MaybeRegisterRepresentation>& storage) const {
+     DCHECK_EQ(inputs().size(),
+@@ -6348,11 +6351,9 @@ struct FastApiCallOp : OperationT<FastApiCallOp> {
+ 
+   FastApiCallOp(V<FrameState> frame_state, V<Object> data_argument,
+                 V<Context> context, base::Vector<const OpIndex> arguments,
+-                const FastApiCallParameters* parameters,
+-                base::Vector<const RegisterRepresentation> out_reps)
++                const FastApiCallParameters* parameters)
+       : Base(kNumNonParamInputs + arguments.size()),
+         parameters(parameters),
+-        out_reps(out_reps),
+         lazy_deopt_on_throw(LazyDeoptOnThrow::kNo) {
+     base::Vector<OpIndex> inputs = this->inputs();
+     inputs[0] = frame_state;
+@@ -6369,26 +6370,21 @@ struct FastApiCallOp : OperationT<FastApiCallOp> {
+     V<Context> mapped_context = mapper.Map(context());
+     auto mapped_arguments = mapper.template Map<8>(arguments());
+     return fn(mapped_frame_state, mapped_data_argument, mapped_context,
+-              base::VectorOf(mapped_arguments), parameters, out_reps);
++              base::VectorOf(mapped_arguments), parameters);
+   }
+ 
+   void Validate(const Graph& graph) const {
+   }
+ 
+-  static FastApiCallOp& New(
+-      Graph* graph, V<FrameState> frame_state, V<Object> data_argument,
+-      V<Context> context, base::Vector<const OpIndex> arguments,
+-      const FastApiCallParameters* parameters,
+-      base::Vector<const RegisterRepresentation> out_reps) {
++  static FastApiCallOp& New(Graph* graph, V<FrameState> frame_state,
++                            V<Object> data_argument, V<Context> context,
++                            base::Vector<const OpIndex> arguments,
++                            const FastApiCallParameters* parameters) {
+     return Base::New(graph, kNumNonParamInputs + arguments.size(), frame_state,
+-                     data_argument, context, arguments, parameters, out_reps);
++                     data_argument, context, arguments, parameters);
+   }
+ 
+-  // out_reps[0] is always word32.
+-  auto options() const {
+-    DCHECK_EQ(out_reps[0], RegisterRepresentation::Word32());
+-    return std::tuple{parameters, out_reps[1], lazy_deopt_on_throw};
+-  }
++  auto options() const { return std::tuple{parameters, lazy_deopt_on_throw}; }
+ };
+ 
+ struct RuntimeAbortOp : FixedArityOperationT<0, RuntimeAbortOp> {
+@@ -9075,9 +9071,6 @@ inline size_t input_count(const FeedbackSource) { return 0; }
+ inline size_t input_count(const ZoneRefSet<Map>) { return 0; }
+ inline size_t input_count(ConstantOp::Storage) { return 0; }
+ inline size_t input_count(Type) { return 0; }
+-inline size_t input_count(base::Vector<const RegisterRepresentation>) {
+-  return 0;
+-}
+ #ifdef V8_ENABLE_WEBASSEMBLY
+ constexpr size_t input_count(const wasm::WasmGlobal*) { return 0; }
+ constexpr size_t input_count(const wasm::StructType*) { return 0; }
+@@ -9159,8 +9152,6 @@ struct ThrowingOpHasLazyDeoptOption<CallOp, void> : std::true_type {};
+ template <>
+ struct ThrowingOpHasProperMembers<CallOp, void> : std::true_type {};
+ 
+-template <>
+-struct ThrowingOpHasProperMembers<FastApiCallOp, void> : std::true_type {};
+ }  // namespace details
+ 
+ #define THROWING_OP_LOOKS_VALID(Name)                             \
+diff --git a/src/compiler/typer.cc b/src/compiler/typer.cc
+index 382f66c8c32..bcf221b5c66 100644
+--- a/src/compiler/typer.cc
++++ b/src/compiler/typer.cc
+@@ -1194,55 +1194,7 @@ Type Typer::Visitor::TypeTypedObjectState(Node* node) {
+ 
+ Type Typer::Visitor::TypeCall(Node* node) { return Type::Any(); }
+ 
+-Type Typer::Visitor::TypeFastApiCall(Node* node) {
+-  FastApiCallParameters const& op_params = FastApiCallParametersOf(node->op());
+-  if (op_params.c_functions().empty()) {
+-    return Type::Undefined();
+-  }
+-
+-  const CFunctionInfo* c_signature = op_params.c_functions()[0].signature;
+-  CTypeInfo return_type = c_signature->ReturnInfo();
+-
+-  switch (return_type.GetType()) {
+-    case CTypeInfo::Type::kBool:
+-      return Type::Boolean();
+-    case CTypeInfo::Type::kFloat32:
+-    case CTypeInfo::Type::kFloat64:
+-      return Type::Number();
+-    case CTypeInfo::Type::kInt32:
+-      return Type::Signed32();
+-    case CTypeInfo::Type::kInt64:
+-      if (c_signature->GetInt64Representation() ==
+-          CFunctionInfo::Int64Representation::kBigInt) {
+-        return Type::SignedBigInt64();
+-      }
+-      DCHECK_EQ(c_signature->GetInt64Representation(),
+-                CFunctionInfo::Int64Representation::kNumber);
+-      return Type::Number();
+-    case CTypeInfo::Type::kSeqOneByteString:
+-      return Type::String();
+-    case CTypeInfo::Type::kUint32:
+-      return Type::Unsigned32();
+-    case CTypeInfo::Type::kUint64:
+-      if (c_signature->GetInt64Representation() ==
+-          CFunctionInfo::Int64Representation::kBigInt) {
+-        return Type::UnsignedBigInt64();
+-      }
+-      DCHECK_EQ(c_signature->GetInt64Representation(),
+-                CFunctionInfo::Int64Representation::kNumber);
+-      return Type::Number();
+-    case CTypeInfo::Type::kUint8:
+-      return Type::UnsignedSmall();
+-    case CTypeInfo::Type::kAny:
+-      // This type is only supposed to be used for parameters, not returns.
+-      UNREACHABLE();
+-    case CTypeInfo::Type::kPointer:
+-    case CTypeInfo::Type::kApiObject:
+-    case CTypeInfo::Type::kV8Value:
+-    case CTypeInfo::Type::kVoid:
+-      return Type::Any();
+-  }
+-}
++Type Typer::Visitor::TypeFastApiCall(Node* node) { return Type::Any(); }
+ 
+ #ifdef V8_ENABLE_CONTINUATION_PRESERVED_EMBEDDER_DATA
+ Type Typer::Visitor::TypeGetContinuationPreservedEmbedderData(Node* node) {
+-- 
+2.46.1
+
