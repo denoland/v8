@@ -72,7 +72,7 @@ class V8_EXPORT_PRIVATE IsolateGroup final {
   // Return true if we can create additional isolate groups: only the case if
   // multiple pointer cages were configured in at build-time.
   static constexpr bool CanCreateNewGroups() {
-    return COMPRESS_POINTERS_IN_MULTIPLE_CAGES_BOOL;
+    return !COMPRESS_POINTERS_BOOL || COMPRESS_POINTERS_IN_MULTIPLE_CAGES_BOOL;
   }
 
   // Create a new isolate group, allocating a fresh pointer cage if pointer
