@@ -4,5 +4,6 @@
 
 // Flags: --harmony-import-assertions
 
-import json from "modules-skip-1.json" assert { type: "json" };
-export function life() { return json.life; }
+import { life } from 'modules-skip-1.mjs' assert { };
+
+assertEquals(42, life());
