@@ -1,0 +1,1811 @@
+From acb5b33caa4c97a3ab12c6fe0fc2c90cfcd76f93 Mon Sep 17 00:00:00 2001
+From: Ryan Dahl <ry@tinyclouds.org>
+Date: Fri, 7 Feb 2025 16:51:12 -0800
+Subject: [PATCH] Revert "[import-attributes] Remove support for import
+ assertions"
+
+This reverts commit 8e18266a98042875335dcba7f4e30f7397f4ba4d.
+---
+ BUILD.bazel                                   |   4 +-
+ BUILD.gn                                      |   4 +-
+ include/v8-isolate.h                          |   2 +-
+ include/v8-script.h                           |   2 +-
+ src/ast/modules.h                             |   2 +-
+ src/common/message-template.h                 |   9 +-
+ src/execution/isolate.cc                      |  68 ++--
+ src/flags/flag-definitions.h                  |   3 +-
+ src/init/bootstrapper.cc                      |   1 +
+ ...ort-attributes.cc => import-assertions.cc} |   2 +-
+ ...mport-attributes.h => import-assertions.h} |   6 +-
+ src/parsing/parser-base.h                     |   8 +-
+ src/parsing/parser.cc                         |  18 +-
+ src/parsing/parser.h                          |   2 +-
+ test/cctest/test-api.cc                       |  10 +-
+ ...s => modules-import-assertions-fail-1.mjs} |   3 +-
+ .../fail/modules-import-assertions-fail-1.out |   6 +
+ ...s => modules-import-assertions-fail-2.mjs} |   3 +-
+ ...t => modules-import-assertions-fail-2.out} |   1 +
+ ...s => modules-import-assertions-fail-3.mjs} |   3 +-
+ .../fail/modules-import-assertions-fail-3.out |   4 +
+ .../fail/modules-import-attributes-fail-1.out |   5 -
+ .../fail/modules-import-attributes-fail-3.out |   4 -
+ ...modules-skip-1-import-assertions-fail.mjs} |   0
+ ...odules-skip-3-import-assertions-fail.json} |   0
+ .../harmony/modules-import-assertions-1.mjs   |   9 +
+ .../harmony/modules-import-assertions-2.mjs   |   9 +
+ .../harmony/modules-import-assertions-3.mjs   |   9 +
+ .../harmony/modules-import-assertions-4.mjs   |   9 +
+ .../modules-import-assertions-dynamic-1.mjs   |  12 +
+ .../modules-import-assertions-dynamic-10.mjs  |  19 +
+ .../modules-import-assertions-dynamic-11.mjs  |  19 +
+ .../modules-import-assertions-dynamic-12.mjs  |  26 ++
+ .../modules-import-assertions-dynamic-2.mjs   |  13 +
+ .../modules-import-assertions-dynamic-3.mjs   |  13 +
+ .../modules-import-assertions-dynamic-4.mjs   |  14 +
+ .../modules-import-assertions-dynamic-5.mjs   |  12 +
+ .../modules-import-assertions-dynamic-6.mjs   |  18 +
+ .../modules-import-assertions-dynamic-7.mjs   |  63 ++++
+ .../modules-import-assertions-dynamic-8.mjs   |  13 +
+ .../modules-import-assertions-dynamic-9.mjs   |  13 +
+ .../modules-import-attributes-dynamic-7.mjs   |   4 +-
+ ...tributes-dynamic-assertions-fallback-1.mjs |  15 +
+ ...tributes-dynamic-assertions-fallback-2.mjs |  15 +
+ .../harmony/modules-skip-imports-json-1.mjs   |   4 +-
+ .../PrivateAccessorAccess.golden              |   8 +-
+ .../PrivateMethodAccess.golden                |   4 +-
+ .../StaticPrivateMethodAccess.golden          |  30 +-
+ test/unittests/objects/modules-unittest.cc    |  52 +--
+ test/unittests/parser/parsing-unittest.cc     | 330 ++++++++++++++----
+ 50 files changed, 736 insertions(+), 167 deletions(-)
+ rename src/parsing/{import-attributes.cc => import-assertions.cc} (91%)
+ rename src/parsing/{import-attributes.h => import-assertions.h} (87%)
+ rename test/message/fail/{modules-import-attributes-fail-1.mjs => modules-import-assertions-fail-1.mjs} (60%)
+ create mode 100644 test/message/fail/modules-import-assertions-fail-1.out
+ rename test/message/fail/{modules-import-attributes-fail-2.mjs => modules-import-assertions-fail-2.mjs} (62%)
+ rename test/message/fail/{modules-import-attributes-fail-2.out => modules-import-assertions-fail-2.out} (61%)
+ rename test/message/fail/{modules-import-attributes-fail-3.mjs => modules-import-assertions-fail-3.mjs} (67%)
+ create mode 100644 test/message/fail/modules-import-assertions-fail-3.out
+ delete mode 100644 test/message/fail/modules-import-attributes-fail-1.out
+ delete mode 100644 test/message/fail/modules-import-attributes-fail-3.out
+ rename test/message/fail/{modules-skip-1-import-attributes-fail.mjs => modules-skip-1-import-assertions-fail.mjs} (100%)
+ rename test/message/fail/{modules-skip-3-import-attributes-fail.json => modules-skip-3-import-assertions-fail.json} (100%)
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-1.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-2.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-3.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-4.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-1.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-10.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-11.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-12.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-2.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-3.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-4.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-5.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-6.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-7.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-8.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-assertions-dynamic-9.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-1.mjs
+ create mode 100644 test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-2.mjs
+
+diff --git a/BUILD.bazel b/BUILD.bazel
+index 474fe56bf9..f7fac1ec21 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -2221,8 +2221,8 @@ filegroup(
+         "src/parsing/expression-scope.h",
+         "src/parsing/func-name-inferrer.cc",
+         "src/parsing/func-name-inferrer.h",
+-        "src/parsing/import-attributes.cc",
+-        "src/parsing/import-attributes.h",
++        "src/parsing/import-assertions.cc",
++        "src/parsing/import-assertions.h",
+         "src/parsing/keywords-gen.h",
+         "src/parsing/literal-buffer.cc",
+         "src/parsing/literal-buffer.h",
+diff --git a/BUILD.gn b/BUILD.gn
+index 94147651f9..5c490cfb6f 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -4065,7 +4065,7 @@ v8_header_set("v8_internal_headers") {
+     "src/objects/waiter-queue-node.h",
+     "src/parsing/expression-scope.h",
+     "src/parsing/func-name-inferrer.h",
+-    "src/parsing/import-attributes.h",
++    "src/parsing/import-assertions.h",
+     "src/parsing/keywords-gen.h",
+     "src/parsing/literal-buffer.h",
+     "src/parsing/parse-info.h",
+@@ -5585,7 +5585,7 @@ v8_source_set("v8_base_without_compiler") {
+     "src/objects/visitors.cc",
+     "src/objects/waiter-queue-node.cc",
+     "src/parsing/func-name-inferrer.cc",
+-    "src/parsing/import-attributes.cc",
++    "src/parsing/import-assertions.cc",
+     "src/parsing/literal-buffer.cc",
+     "src/parsing/parse-info.cc",
+     "src/parsing/parser.cc",
+diff --git a/include/v8-isolate.h b/include/v8-isolate.h
+index 006928ee72..29b0f74af6 100644
+--- a/include/v8-isolate.h
++++ b/include/v8-isolate.h
+@@ -585,7 +585,7 @@ class V8_EXPORT Isolate {
+     kDurationFormat = 117,
+     kInvalidatedNumberStringNotRegexpLikeProtector = 118,
+     kOBSOLETE_RegExpUnicodeSetIncompatibilitiesWithUnicodeMode = 119,
+-    kOBSOLETE_ImportAssertionDeprecatedSyntax = 120,
++    kImportAssertionDeprecatedSyntax = 120,
+     kLocaleInfoObsoletedGetters = 121,
+     kLocaleInfoFunctions = 122,
+     kCompileHintsMagicAll = 123,
+diff --git a/include/v8-script.h b/include/v8-script.h
+index 244a5a7781..0c81aae011 100644
+--- a/include/v8-script.h
++++ b/include/v8-script.h
+@@ -155,7 +155,7 @@ class V8_EXPORT ModuleRequest : public Data {
+    */
+   Local<FixedArray> GetImportAttributes() const;
+ 
+-  V8_DEPRECATED("Use GetImportAttributes instead")
++  V8_DEPRECATE_SOON("Use GetImportAttributes instead")
+   Local<FixedArray> GetImportAssertions() const {
+     return GetImportAttributes();
+   }
+diff --git a/src/ast/modules.h b/src/ast/modules.h
+index 748f12da3e..104931194b 100644
+--- a/src/ast/modules.h
++++ b/src/ast/modules.h
+@@ -5,7 +5,7 @@
+ #ifndef V8_AST_MODULES_H_
+ #define V8_AST_MODULES_H_
+ 
+-#include "src/parsing/import-attributes.h"
++#include "src/parsing/import-assertions.h"
+ #include "src/parsing/scanner.h"  // Only for Scanner::Location.
+ #include "src/zone/zone-containers.h"
+ 
+diff --git a/src/common/message-template.h b/src/common/message-template.h
+index 14a868c28f..630336ca1e 100644
+--- a/src/common/message-template.h
++++ b/src/common/message-template.h
+@@ -115,7 +115,10 @@ namespace internal {
+   T(IllegalInvocation, "Illegal invocation")                                   \
+   T(ImmutablePrototypeSet,                                                     \
+     "Immutable prototype object '%' cannot have their prototype set")          \
+-  T(ImportAttributesDuplicateKey, "Import attribute has duplicate key '%'")    \
++  T(ImportAssertDeprecated,                                                    \
++    "'assert' is deprecated in import statements and support will be removed " \
++    "in %; use 'with' instead")                                                \
++  T(ImportAssertionDuplicateKey, "Import assertion has duplicate key '%'")     \
+   T(ImportCallNotNewExpression, "Cannot use new with import")                  \
+   T(ImportOutsideModule, "Cannot use import statement outside a module")       \
+   T(ImportMetaOutsideModule, "Cannot use 'import.meta' outside a module")      \
+@@ -161,7 +164,7 @@ namespace internal {
+   T(NonCoercibleWithProperty,                                                  \
+     "Cannot destructure property '%' of '%' as it is %.")                      \
+   T(NonExtensibleProto, "% is not extensible")                                 \
+-  T(NonObjectAttributesOption, "The 'with' option must be an object")          \
++  T(NonObjectAssertOption, "The 'assert' option must be an object")            \
+   T(NonObjectInInstanceOfCheck,                                                \
+     "Right-hand side of 'instanceof' is not an object")                        \
+   T(NonObjectPrivateNameAccess, "Cannot access private name % from %")         \
+@@ -173,7 +176,7 @@ namespace internal {
+     "Cannot set properties of % (setting '%')")                                \
+   T(NonObjectImportArgument,                                                   \
+     "The second argument to import() must be an object")                       \
+-  T(NonStringImportAttributeValue, "Import attribute value must be a string")  \
++  T(NonStringImportAssertionValue, "Import assertion value must be a string")  \
+   T(NoSetterInCallback, "Cannot set property % of % which has only a getter")  \
+   T(NotAnIterator, "% is not an iterator")                                     \
+   T(PromiseNewTargetUndefined,                                                 \
+diff --git a/src/execution/isolate.cc b/src/execution/isolate.cc
+index 0d7b5d2812..5e7e5b2e40 100644
+--- a/src/execution/isolate.cc
++++ b/src/execution/isolate.cc
+@@ -6533,7 +6533,8 @@ MaybeDirectHandle<FixedArray> Isolate::GetImportAttributesFromArgument(
+ 
+   // The parser shouldn't have allowed the second argument to import() if
+   // the flag wasn't enabled.
+-  DCHECK(v8_flags.harmony_import_attributes);
++  DCHECK(v8_flags.harmony_import_assertions ||
++         v8_flags.harmony_import_attributes);
+ 
+   if (!IsJSReceiver(*import_options_argument)) {
+     this->Throw(
+@@ -6557,62 +6558,87 @@ MaybeDirectHandle<FixedArray> Isolate::GetImportAttributesFromArgument(
+     }
+   }
+ 
+-  // If there is no 'with' option in the options bag, it's not an error. Just do
+-  // the import() as if no attributes were provided.
++  if (v8_flags.harmony_import_assertions &&
++      (!v8_flags.harmony_import_attributes ||
++       IsUndefined(*import_attributes_object))) {
++    Handle<Name> assert_key = factory()->assert_string();
++    if (!JSReceiver::GetProperty(this, import_options_argument_receiver,
++                                 assert_key)
++             .ToHandle(&import_attributes_object)) {
++      // This can happen if the property has a getter function that throws
++      // an error.
++      return MaybeHandle<FixedArray>();
++    }
++
++    if (V8_UNLIKELY(!IsUndefined(*import_attributes_object))) {
++      MessageLocation* location = nullptr;
++      MessageLocation computed_location;
++      if (ComputeLocation(&computed_location)) {
++        location = &computed_location;
++      }
++      DirectHandle<JSMessageObject> message = MessageHandler::MakeMessageObject(
++          this, MessageTemplate::kImportAssertDeprecated, location,
++          factory()->NewStringFromAsciiChecked("V8 v12.6 and Chrome 126"));
++      message->set_error_level(v8::Isolate::kMessageWarning);
++      MessageHandler::ReportMessage(this, location, message);
++    }
++  }
++
++  // If there is no 'with' or 'assert' option in the options bag, it's not an
++  // error. Just do the import() as if no assertions were provided.
+   if (IsUndefined(*import_attributes_object)) return import_attributes_array;
+ 
+   if (!IsJSReceiver(*import_attributes_object)) {
+     this->Throw(
+-        *factory()->NewTypeError(MessageTemplate::kNonObjectAttributesOption));
+-    return MaybeDirectHandle<FixedArray>();
++        *factory()->NewTypeError(MessageTemplate::kNonObjectAssertOption));
++    return MaybeHandle<FixedArray>();
+   }
+ 
+   DirectHandle<JSReceiver> import_attributes_object_receiver =
+       Cast<JSReceiver>(import_attributes_object);
+ 
+-  DirectHandle<FixedArray> attribute_keys;
++  Handle<FixedArray> assertion_keys;
+   if (!KeyAccumulator::GetKeys(this, import_attributes_object_receiver,
+                                KeyCollectionMode::kOwnOnly, ENUMERABLE_STRINGS,
+                                GetKeysConversion::kConvertToString)
+-           .ToHandle(&attribute_keys)) {
+-    // This happens if the attributes object is a Proxy whose ownKeys() or
++           .ToHandle(&assertion_keys)) {
++    // This happens if the assertions object is a Proxy whose ownKeys() or
+     // getOwnPropertyDescriptor() trap throws.
+     return MaybeDirectHandle<FixedArray>();
+   }
+ 
+   bool has_non_string_attribute = false;
+ 
+-  // The attributes will be passed to the host in the form: [key1,
++  // The assertions will be passed to the host in the form: [key1,
+   // value1, key2, value2, ...].
+   constexpr size_t kAttributeEntrySizeForDynamicImport = 2;
+   import_attributes_array = factory()->NewFixedArray(static_cast<int>(
+-      attribute_keys->length() * kAttributeEntrySizeForDynamicImport));
+-  for (int i = 0; i < attribute_keys->length(); i++) {
+-    DirectHandle<String> attribute_key(Cast<String>(attribute_keys->get(i)),
+-                                       this);
+-    DirectHandle<Object> attribute_value;
++      assertion_keys->length() * kAttributeEntrySizeForDynamicImport));
++  for (int i = 0; i < assertion_keys->length(); i++) {
++    Handle<String> assertion_key(Cast<String>(assertion_keys->get(i)), this);
++    Handle<Object> assertion_value;
+     if (!Object::GetPropertyOrElement(this, import_attributes_object_receiver,
+-                                      attribute_key)
+-             .ToHandle(&attribute_value)) {
++                                      assertion_key)
++             .ToHandle(&assertion_value)) {
+       // This can happen if the property has a getter function that throws
+       // an error.
+       return MaybeDirectHandle<FixedArray>();
+     }
+ 
+-    if (!IsString(*attribute_value)) {
++    if (!IsString(*assertion_value)) {
+       has_non_string_attribute = true;
+     }
+ 
+     import_attributes_array->set((i * kAttributeEntrySizeForDynamicImport),
+-                                 *attribute_key);
++                                 *assertion_key);
+     import_attributes_array->set((i * kAttributeEntrySizeForDynamicImport) + 1,
+-                                 *attribute_value);
++                                 *assertion_value);
+   }
+ 
+   if (has_non_string_attribute) {
+     this->Throw(*factory()->NewTypeError(
+-        MessageTemplate::kNonStringImportAttributeValue));
+-    return MaybeDirectHandle<FixedArray>();
++        MessageTemplate::kNonStringImportAssertionValue));
++    return MaybeHandle<FixedArray>();
+   }
+ 
+   return import_attributes_array;
+diff --git a/src/flags/flag-definitions.h b/src/flags/flag-definitions.h
+index 2fa08475e1..b47621fd39 100644
+--- a/src/flags/flag-definitions.h
++++ b/src/flags/flag-definitions.h
+@@ -275,7 +275,8 @@ DEFINE_BOOL(js_shipping, true, "enable all shipped JavaScript features")
+ #define HARMONY_INPROGRESS_BASE(V)                                             \
+   V(harmony_temporal, "Temporal")                                              \
+   V(harmony_shadow_realm, "harmony ShadowRealm")                               \
+-  V(harmony_struct, "harmony structs, shared structs, and shared arrays")
++  V(harmony_struct, "harmony structs, shared structs, and shared arrays")      \
++  V(harmony_import_assertions, "harmony import assertions (deprecated)")
+ 
+ #define JAVASCRIPT_INPROGRESS_FEATURES_BASE(V)       \
+   V(js_decorators, "decorators")                     \
+diff --git a/src/init/bootstrapper.cc b/src/init/bootstrapper.cc
+index 6eb45b5e1b..a349810519 100644
+--- a/src/init/bootstrapper.cc
++++ b/src/init/bootstrapper.cc
+@@ -5506,6 +5506,7 @@ void Genesis::InitializeConsole(DirectHandle<JSObject> extras_binding) {
+ #define EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(id) \
+   void Genesis::InitializeGlobal_##id() {}
+ 
++EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_import_assertions)
+ EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_import_attributes)
+ EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(js_regexp_modifiers)
+ EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(js_regexp_duplicate_named_groups)
+diff --git a/src/parsing/import-attributes.cc b/src/parsing/import-assertions.cc
+similarity index 91%
+rename from src/parsing/import-attributes.cc
+rename to src/parsing/import-assertions.cc
+index 4d0fb40d2f..3d30bd7b5b 100644
+--- a/src/parsing/import-attributes.cc
++++ b/src/parsing/import-assertions.cc
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "src/parsing/import-attributes.h"
++#include "src/parsing/import-assertions.h"
+ 
+ #include "src/ast/ast-value-factory.h"
+ 
+diff --git a/src/parsing/import-attributes.h b/src/parsing/import-assertions.h
+similarity index 87%
+rename from src/parsing/import-attributes.h
+rename to src/parsing/import-assertions.h
+index 33a7617f14..4f0541672b 100644
+--- a/src/parsing/import-attributes.h
++++ b/src/parsing/import-assertions.h
+@@ -2,8 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#ifndef V8_PARSING_IMPORT_ATTRIBUTES_H_
+-#define V8_PARSING_IMPORT_ATTRIBUTES_H_
++#ifndef V8_PARSING_IMPORT_ASSERTIONS_H_
++#define V8_PARSING_IMPORT_ASSERTIONS_H_
+ 
+ #include "src/parsing/scanner.h"  // Only for Scanner::Location.
+ #include "src/zone/zone-containers.h"
+@@ -29,4 +29,4 @@ class ImportAttributes
+ }  // namespace internal
+ }  // namespace v8
+ 
+-#endif  // V8_PARSING_IMPORT_ATTRIBUTES_H_
++#endif  // V8_PARSING_IMPORT_ASSERTIONS_H_
+diff --git a/src/parsing/parser-base.h b/src/parsing/parser-base.h
+index 2265d1882a..0379e98b37 100644
+--- a/src/parsing/parser-base.h
++++ b/src/parsing/parser-base.h
+@@ -4193,15 +4193,17 @@ ParserBase<Impl>::ParseImportExpressions() {
+                  v8_flags.js_source_phase_imports);
+   // TODO(42204365): Enable import attributes with source phase import once
+   // specified.
+-  if (v8_flags.harmony_import_attributes &&
+-      phase == ModuleImportPhase::kEvaluation && Check(Token::kComma)) {
++  const bool check_import_attributes = (v8_flags.harmony_import_assertions ||
++                                        v8_flags.harmony_import_attributes) &&
++                                       phase == ModuleImportPhase::kEvaluation;
++  if (check_import_attributes && Check(Token::kComma)) {
+     if (Check(Token::kRightParen)) {
+       // A trailing comma allowed after the specifier.
+       return factory()->NewImportCallExpression(specifier, phase, pos);
+     } else {
+       ExpressionT import_options = ParseAssignmentExpressionCoverGrammar();
+       Check(Token::kComma);  // A trailing comma is allowed after the import
+-                             // attributes.
++                             // assertions.
+       Expect(Token::kRightParen);
+       return factory()->NewImportCallExpression(specifier, phase,
+                                                 import_options, pos);
+diff --git a/src/parsing/parser.cc b/src/parsing/parser.cc
+index 88acee17b8..878333c0df 100644
+--- a/src/parsing/parser.cc
++++ b/src/parsing/parser.cc
+@@ -1446,10 +1446,26 @@ ImportAttributes* Parser::ParseImportWithOrAssertClause() {
+   //    LiteralPropertyName
+   //    LiteralPropertyName ':' StringLiteral , WithEntries
+ 
++  // (DEPRECATED)
++  // AssertClause :
++  //    assert '{' '}'
++  //    assert '{' WithEntries ','? '}'
++
+   auto import_attributes = zone()->New<ImportAttributes>(zone());
+ 
+   if (v8_flags.harmony_import_attributes && Check(Token::kWith)) {
+     // 'with' keyword consumed
++  } else if (v8_flags.harmony_import_assertions &&
++             !scanner()->HasLineTerminatorBeforeNext() &&
++             CheckContextualKeyword(ast_value_factory()->assert_string())) {
++    // The 'assert' contextual keyword is deprecated in favor of 'with', and we
++    // need to investigate feasibility of unshipping.
++    //
++    // TODO(v8:13856): Remove once decision is made to unship 'assert' or keep.
++    ++use_counts_[v8::Isolate::kImportAssertionDeprecatedSyntax];
++    info_->pending_error_handler()->ReportWarningAt(
++        position(), end_position(), MessageTemplate::kImportAssertDeprecated,
++        "V8 v12.6 and Chrome 126");
+   } else {
+     return import_attributes;
+   }
+@@ -1475,7 +1491,7 @@ ImportAttributes* Parser::ParseImportWithOrAssertClause() {
+         attribute_key, std::make_pair(attribute_value, location)));
+     if (!result.second) {
+       // It is a syntax error if two WithEntries have the same key.
+-      ReportMessageAt(location, MessageTemplate::kImportAttributesDuplicateKey,
++      ReportMessageAt(location, MessageTemplate::kImportAssertionDuplicateKey,
+                       attribute_key);
+       break;
+     }
+diff --git a/src/parsing/parser.h b/src/parsing/parser.h
+index 084329bdd9..72e29f68ff 100644
+--- a/src/parsing/parser.h
++++ b/src/parsing/parser.h
+@@ -16,7 +16,7 @@
+ #include "src/base/small-vector.h"
+ #include "src/base/threaded-list.h"
+ #include "src/common/globals.h"
+-#include "src/parsing/import-attributes.h"
++#include "src/parsing/import-assertions.h"
+ #include "src/parsing/parse-info.h"
+ #include "src/parsing/parser-base.h"
+ #include "src/parsing/parsing.h"
+diff --git a/test/cctest/test-api.cc b/test/cctest/test-api.cc
+index eaa96c232c..26011d805d 100644
+--- a/test/cctest/test-api.cc
++++ b/test/cctest/test-api.cc
+@@ -26438,7 +26438,7 @@ TEST(DynamicImport) {
+ }
+ 
+ v8::MaybeLocal<v8::Promise>
+-HostImportModuleDynamicallyWithAttributesCallbackResolve(
++HostImportModuleDynamicallyWithAssertionsCallbackResolve(
+     Local<v8::Context> context, Local<v8::Data> host_defined_options,
+     Local<v8::Value> resource_name, Local<v8::String> specifier,
+     Local<v8::FixedArray> import_attributes) {
+@@ -26487,14 +26487,14 @@ HostImportModuleDynamicallyWithAttributesCallbackResolve(
+   return resolver->GetPromise();
+ }
+ 
+-TEST(DynamicImportWithAttributes) {
+-  FLAG_SCOPE(harmony_import_attributes);
++TEST(DynamicImportWithAssertions) {
++  FLAG_SCOPE(harmony_import_assertions);
+ 
+   LocalContext context;
+   v8::Isolate* isolate = context->GetIsolate();
+   v8::HandleScope scope(isolate);
+   isolate->SetHostImportModuleDynamicallyCallback(
+-      HostImportModuleDynamicallyWithAttributesCallbackResolve);
++      HostImportModuleDynamicallyWithAssertionsCallbackResolve);
+ 
+   i::DirectHandle<i::String> url =
+       v8::Utils::OpenDirectHandle(*v8_str("www.google.com"));
+@@ -26504,7 +26504,7 @@ TEST(DynamicImportWithAttributes) {
+   i::DirectHandle<i::String> source(v8::Utils::OpenHandle(*v8_str("foo")));
+   v8::Local<v8::Object> import_options =
+       CompileRun(
+-          "var arg = { with: { 'b': 'w', aa: 'x',  c: 'y', a: 'z'} };"
++          "var arg = { assert: { 'b': 'w', aa: 'x',  c: 'y', a: 'z'} };"
+           "arg;")
+           ->ToObject(context.local())
+           .ToLocalChecked();
+diff --git a/test/message/fail/modules-import-attributes-fail-1.mjs b/test/message/fail/modules-import-assertions-fail-1.mjs
+similarity index 60%
+rename from test/message/fail/modules-import-attributes-fail-1.mjs
+rename to test/message/fail/modules-import-assertions-fail-1.mjs
+index 53aa8d6de4..0033baab53 100644
+--- a/test/message/fail/modules-import-attributes-fail-1.mjs
++++ b/test/message/fail/modules-import-assertions-fail-1.mjs
+@@ -4,5 +4,6 @@
+ //
+ // MODULE
+ //
++// Flags: --harmony-import-assertions
+ 
+-import "modules-skip-1-import-attributes-fail.mjs" with { type: "notARealType"}
++import "modules-skip-1-import-assertions-fail.mjs" assert { type: "notARealType"}
+diff --git a/test/message/fail/modules-import-assertions-fail-1.out b/test/message/fail/modules-import-assertions-fail-1.out
+new file mode 100644
+index 0000000000..1a93dd5973
+--- /dev/null
++++ b/test/message/fail/modules-import-assertions-fail-1.out
+@@ -0,0 +1,6 @@
++*%(basename)s:9: 'assert' is deprecated in import statements and support will be removed in V8 v12.6 and Chrome 126; use 'with' instead
++undefined:0: Error: Invalid module type was asserted
++
++
++Error: Invalid module type was asserted
++
+diff --git a/test/message/fail/modules-import-attributes-fail-2.mjs b/test/message/fail/modules-import-assertions-fail-2.mjs
+similarity index 62%
+rename from test/message/fail/modules-import-attributes-fail-2.mjs
+rename to test/message/fail/modules-import-assertions-fail-2.mjs
+index dce5b78b02..bf7cdb3d4e 100644
+--- a/test/message/fail/modules-import-attributes-fail-2.mjs
++++ b/test/message/fail/modules-import-assertions-fail-2.mjs
+@@ -4,5 +4,6 @@
+ //
+ // MODULE
+ //
++// Flags: --harmony-import-assertions
+ 
+-import "modules-skip-1-import-attributes-fail.mjs" with { type: "json"}
++import "modules-skip-1-import-assertions-fail.mjs" assert { type: "json"}
+diff --git a/test/message/fail/modules-import-attributes-fail-2.out b/test/message/fail/modules-import-assertions-fail-2.out
+similarity index 61%
+rename from test/message/fail/modules-import-attributes-fail-2.out
+rename to test/message/fail/modules-import-assertions-fail-2.out
+index 4df9594bd5..c74247745b 100644
+--- a/test/message/fail/modules-import-attributes-fail-2.out
++++ b/test/message/fail/modules-import-assertions-fail-2.out
+@@ -1,3 +1,4 @@
++*%(basename)s:9: 'assert' is deprecated in import statements and support will be removed in V8 v12.6 and Chrome 126; use 'with' instead
+ undefined:1: SyntaxError: Unexpected token '/', "// Copyrig"... is not valid JSON
+ // Copyright 2021 the V8 project authors. All rights reserved.
+ ^
+diff --git a/test/message/fail/modules-import-attributes-fail-3.mjs b/test/message/fail/modules-import-assertions-fail-3.mjs
+similarity index 67%
+rename from test/message/fail/modules-import-attributes-fail-3.mjs
+rename to test/message/fail/modules-import-assertions-fail-3.mjs
+index 6e475e60d7..3a6a1b1a01 100644
+--- a/test/message/fail/modules-import-attributes-fail-3.mjs
++++ b/test/message/fail/modules-import-assertions-fail-3.mjs
+@@ -4,5 +4,6 @@
+ //
+ // MODULE
+ //
++// Flags: --harmony-import-assertions
+ 
+-import "modules-skip-3-import-attributes-fail.json"
++import "modules-skip-3-import-assertions-fail.json"
+diff --git a/test/message/fail/modules-import-assertions-fail-3.out b/test/message/fail/modules-import-assertions-fail-3.out
+new file mode 100644
+index 0000000000..2de8442c13
+--- /dev/null
++++ b/test/message/fail/modules-import-assertions-fail-3.out
+@@ -0,0 +1,4 @@
++*modules-skip-3-import-assertions-fail.json:1: SyntaxError: Unexpected token ':'
++{ "life": 42 }
++        ^
++SyntaxError: Unexpected token ':'
+\ No newline at end of file
+diff --git a/test/message/fail/modules-import-attributes-fail-1.out b/test/message/fail/modules-import-attributes-fail-1.out
+deleted file mode 100644
+index 6461a42e92..0000000000
+--- a/test/message/fail/modules-import-attributes-fail-1.out
++++ /dev/null
+@@ -1,5 +0,0 @@
+-undefined:0: Error: Invalid module type was asserted
+-
+-
+-Error: Invalid module type was asserted
+-
+diff --git a/test/message/fail/modules-import-attributes-fail-3.out b/test/message/fail/modules-import-attributes-fail-3.out
+deleted file mode 100644
+index e015a228f6..0000000000
+--- a/test/message/fail/modules-import-attributes-fail-3.out
++++ /dev/null
+@@ -1,4 +0,0 @@
+-*modules-skip-3-import-attributes-fail.json:1: SyntaxError: Unexpected token ':'
+-{ "life": 42 }
+-        ^
+-SyntaxError: Unexpected token ':'
+diff --git a/test/message/fail/modules-skip-1-import-attributes-fail.mjs b/test/message/fail/modules-skip-1-import-assertions-fail.mjs
+similarity index 100%
+rename from test/message/fail/modules-skip-1-import-attributes-fail.mjs
+rename to test/message/fail/modules-skip-1-import-assertions-fail.mjs
+diff --git a/test/message/fail/modules-skip-3-import-attributes-fail.json b/test/message/fail/modules-skip-3-import-assertions-fail.json
+similarity index 100%
+rename from test/message/fail/modules-skip-3-import-attributes-fail.json
+rename to test/message/fail/modules-skip-3-import-assertions-fail.json
+diff --git a/test/mjsunit/harmony/modules-import-assertions-1.mjs b/test/mjsunit/harmony/modules-import-assertions-1.mjs
+new file mode 100644
+index 0000000000..eaeffa4967
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-1.mjs
+@@ -0,0 +1,9 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --harmony-import-assertions
++
++import { life } from 'modules-skip-1.mjs' assert { };
++
++assertEquals(42, life());
+diff --git a/test/mjsunit/harmony/modules-import-assertions-2.mjs b/test/mjsunit/harmony/modules-import-assertions-2.mjs
+new file mode 100644
+index 0000000000..ac0295870d
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-2.mjs
+@@ -0,0 +1,9 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --harmony-import-assertions
++
++import json from 'modules-skip-1.json' assert { type: 'json' };
++
++assertEquals(42, json.life);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-3.mjs b/test/mjsunit/harmony/modules-import-assertions-3.mjs
+new file mode 100644
+index 0000000000..9a648fcc6e
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-3.mjs
+@@ -0,0 +1,9 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --harmony-import-assertions
++
++import {life} from 'modules-skip-imports-json-1.mjs';
++
++assertEquals(42, life());
+diff --git a/test/mjsunit/harmony/modules-import-assertions-4.mjs b/test/mjsunit/harmony/modules-import-assertions-4.mjs
+new file mode 100644
+index 0000000000..99d486abf7
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-4.mjs
+@@ -0,0 +1,9 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --harmony-import-assertions
++
++import json from 'modules-skip-1.json' assert { type: 'json', notARealAssertion: 'value'};
++
++assertEquals(42, json.life);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-1.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-1.mjs
+new file mode 100644
+index 0000000000..c1daa47eaa
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-1.mjs
+@@ -0,0 +1,12 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var life;
++import('modules-skip-1.mjs', { }).then(namespace => life = namespace.life());
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-10.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-10.mjs
+new file mode 100644
+index 0000000000..beef27d68c
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-10.mjs
+@@ -0,0 +1,19 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var result1;
++var result2;
++import('modules-skip-1.json', { get assert() { throw 'bad \'assert\' getter!'; } }).then(
++    () => assertUnreachable('Should have failed due to throwing getter'),
++    error => result1 = error);
++import('modules-skip-1.json', { assert: { get assertionKey() { throw 'bad \'assertionKey\' getter!'; } } }).then(
++    () => assertUnreachable('Should have failed due to throwing getter'),
++    error => result2 = error);
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals('bad \'assert\' getter!', result1);
++assertEquals('bad \'assertionKey\' getter!', result2);
+\ No newline at end of file
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-11.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-11.mjs
+new file mode 100644
+index 0000000000..5b4b0704f8
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-11.mjs
+@@ -0,0 +1,19 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions --harmony-top-level-await
++
++var life1;
++var life2;
++import('modules-skip-1.json', { assert: { type: 'json' } }).then(
++    namespace => life1 = namespace.default.life);
++
++// Try loading the same module a second time.
++import('modules-skip-1.json', { assert: { type: 'json' } }).then(
++    namespace => life2 = namespace.default.life);
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life1);
++assertEquals(42, life2);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-12.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-12.mjs
+new file mode 100644
+index 0000000000..0cbb5f25de
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-12.mjs
+@@ -0,0 +1,26 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++let result1;
++let result2;
++
++let badAssertProxy1 = new Proxy({}, { ownKeys() { throw "bad ownKeys!"; } });
++import('./modules-skip-1.mjs', { assert: badAssertProxy1 }).then(
++    () => assertUnreachable('Should have failed due to throwing ownKeys'),
++    error => result1 = error);
++
++let badAssertProxy2 = new Proxy(
++    {foo: "bar"},
++    { getOwnPropertyDescriptor() { throw "bad getOwnPropertyDescriptor!"; } });
++import('./modules-skip-1.mjs', { assert: badAssertProxy2 }).then(
++    () => assertUnreachable(
++        'Should have failed due to throwing getOwnPropertyDescriptor'),
++    error => result2 = error);
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals('bad ownKeys!', result1);
++assertEquals('bad getOwnPropertyDescriptor!', result2);
+\ No newline at end of file
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-2.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-2.mjs
+new file mode 100644
+index 0000000000..041e330448
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-2.mjs
+@@ -0,0 +1,13 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var life;
++import('modules-skip-1.mjs', { assert: { } }).then(
++    namespace => life = namespace.life());
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-3.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-3.mjs
+new file mode 100644
+index 0000000000..56a9062b11
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-3.mjs
+@@ -0,0 +1,13 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var life;
++import('modules-skip-1.json', { assert: { type: 'json' } }).then(
++    namespace => life = namespace.default.life);
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-4.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-4.mjs
+new file mode 100644
+index 0000000000..05a1929ff3
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-4.mjs
+@@ -0,0 +1,14 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var result;
++import('modules-skip-1.json', { assert: { type: 'notARealType' } }).then(
++    () => assertUnreachable('Should have failed due to bad module type'),
++    error => result = error.message);
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals('Invalid module type was asserted', result);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-5.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-5.mjs
+new file mode 100644
+index 0000000000..2019cfd12a
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-5.mjs
+@@ -0,0 +1,12 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var life;
++import('modules-skip-imports-json-1.mjs',).then(namespace => life = namespace.life());
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-6.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-6.mjs
+new file mode 100644
+index 0000000000..76a0eddb0f
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-6.mjs
+@@ -0,0 +1,18 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var life;
++import('modules-skip-1.json', { assert: { type: 'json', notARealAssertion: 'value' } }).then(
++    namespace => life = namespace.default.life);
++
++var life2;
++import('modules-skip-1.json', { assert: { 0: 'value', type: 'json' } }).then(
++    namespace => life2 = namespace.default.life);
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
++assertEquals(42, life2);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-7.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-7.mjs
+new file mode 100644
+index 0000000000..364357a100
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-7.mjs
+@@ -0,0 +1,63 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var result1;
++var result2;
++var result3;
++var result4;
++var result5;
++var result6;
++var result7;
++var result8;
++var result9;
++var result10;
++import('modules-skip-1.json', null).then(
++    () => assertUnreachable('Should have failed due to non-object parameter'),
++    error => result1 = error.message);
++import('modules-skip-1.json', 7).then(
++    () => assertUnreachable('Should have failed due to non-object parameter'),
++    error => result2 = error.message);
++import('modules-skip-1.json', 'string').then(
++        () => assertUnreachable('Should have failed due to non-object parameter'),
++        error => result3 = error.message);
++import('modules-skip-1.json', { assert: null}).then(
++    () => assertUnreachable('Should have failed due to bad assert object'),
++    error => result4 = error.message);
++import('modules-skip-1.json', { assert: 7}).then(
++    () => assertUnreachable('Should have failed due to bad assert object'),
++    error => result5 = error.message);
++import('modules-skip-1.json', { assert: 'string'}).then(
++    () => assertUnreachable('Should have failed due to bad assert object'),
++    error => result6 = error.message);
++import('modules-skip-1.json', { assert: { a: null }}).then(
++    () => assertUnreachable('Should have failed due to bad assert object'),
++    error => result7 = error.message);
++import('modules-skip-1.json', { assert: { a: undefined }}).then(
++    () => assertUnreachable('Should have failed due to bad assertion value'),
++    error => result8 = error.message);
++import('modules-skip-1.json', { assert: { a: 7 }}).then(
++    () => assertUnreachable('Should have failed due to bad assertion value'),
++    error => result9 = error.message);
++    import('modules-skip-1.json', { assert: { a: { } }}).then(
++        () => assertUnreachable('Should have failed due to bad assertion value'),
++        error => result10 = error.message);
++
++%PerformMicrotaskCheckpoint();
++
++const argumentNotObjectError = 'The second argument to import() must be an object';
++const assertOptionNotObjectError = 'The \'assert\' option must be an object';
++const attributeValueNotStringError = 'Import assertion value must be a string';
++
++assertEquals(argumentNotObjectError, result1);
++assertEquals(argumentNotObjectError, result2);
++assertEquals(argumentNotObjectError, result3);
++assertEquals(assertOptionNotObjectError, result4);
++assertEquals(assertOptionNotObjectError, result5);
++assertEquals(assertOptionNotObjectError, result6);
++assertEquals(attributeValueNotStringError, result7);
++assertEquals(attributeValueNotStringError, result8);
++assertEquals(attributeValueNotStringError, result9);
++assertEquals(attributeValueNotStringError, result10);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-8.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-8.mjs
+new file mode 100644
+index 0000000000..95e1a1e707
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-8.mjs
+@@ -0,0 +1,13 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var life;
++import('modules-skip-1.mjs', undefined).then(
++    namespace => life = namespace.life());
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-import-assertions-dynamic-9.mjs b/test/mjsunit/harmony/modules-import-assertions-dynamic-9.mjs
+new file mode 100644
+index 0000000000..2a03c31cf5
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-assertions-dynamic-9.mjs
+@@ -0,0 +1,13 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-assertions
++
++var life;
++import('modules-skip-1.mjs', { assert: undefined }).then(
++    namespace => life = namespace.life());
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-import-attributes-dynamic-7.mjs b/test/mjsunit/harmony/modules-import-attributes-dynamic-7.mjs
+index 14f69d5c59..d82b352ab0 100644
+--- a/test/mjsunit/harmony/modules-import-attributes-dynamic-7.mjs
++++ b/test/mjsunit/harmony/modules-import-attributes-dynamic-7.mjs
+@@ -48,8 +48,8 @@ import('modules-skip-1.json', { with: { a: 7 }}).then(
+ %PerformMicrotaskCheckpoint();
+ 
+ const argumentNotObjectError = 'The second argument to import() must be an object';
+-const attributesOptionNotObjectError = 'The \'with\' option must be an object';
+-const attributeValueNotStringError = 'Import attribute value must be a string';
++const attributesOptionNotObjectError = 'The \'assert\' option must be an object';
++const attributeValueNotStringError = 'Import assertion value must be a string';
+ 
+ assertEquals(argumentNotObjectError, result1);
+ assertEquals(argumentNotObjectError, result2);
+diff --git a/test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-1.mjs b/test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-1.mjs
+new file mode 100644
+index 0000000000..3faaf0dcce
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-1.mjs
+@@ -0,0 +1,15 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-attributes --harmony-import-assertions
++
++var life;
++import('modules-skip-1.mjs', {
++    with: {},
++    get assert() { throw 'Should not read assert'; }
++}).then(namespace => life = namespace.life());
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-2.mjs b/test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-2.mjs
+new file mode 100644
+index 0000000000..4c83d2fbd7
+--- /dev/null
++++ b/test/mjsunit/harmony/modules-import-attributes-dynamic-assertions-fallback-2.mjs
+@@ -0,0 +1,15 @@
++// Copyright 2021 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax --harmony-import-attributes --harmony-import-assertions
++
++var life;
++import('modules-skip-1.json', {
++    with: undefined,
++    assert: { type: 'json' }
++}).then(namespace => life = namespace.default.life);
++
++%PerformMicrotaskCheckpoint();
++
++assertEquals(42, life);
+diff --git a/test/mjsunit/harmony/modules-skip-imports-json-1.mjs b/test/mjsunit/harmony/modules-skip-imports-json-1.mjs
+index 6681d04216..63474b8801 100644
+--- a/test/mjsunit/harmony/modules-skip-imports-json-1.mjs
++++ b/test/mjsunit/harmony/modules-skip-imports-json-1.mjs
+@@ -2,5 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-import json from "modules-skip-1.json" with { type: "json" };
++// Flags: --harmony-import-assertions
++
++import json from "modules-skip-1.json" assert { type: "json" };
+ export function life() { return json.life; }
+diff --git a/test/unittests/interpreter/bytecode_expectations/PrivateAccessorAccess.golden b/test/unittests/interpreter/bytecode_expectations/PrivateAccessorAccess.golden
+index bb3aff70f5..452384b5e4 100644
+--- a/test/unittests/interpreter/bytecode_expectations/PrivateAccessorAccess.golden
++++ b/test/unittests/interpreter/bytecode_expectations/PrivateAccessorAccess.golden
+@@ -83,7 +83,7 @@ bytecodes: [
+   /*   48 E> */ B(DefineKeyedOwnProperty), R(this), R(0), U8(0), U8(0),
+   /*   53 S> */ B(LdaImmutableCurrentContextSlot), U8(3),
+   /*   58 E> */ B(GetKeyedProperty), R(this), U8(2),
+-                B(Wide), B(LdaSmi), I16(329),
++                B(Wide), B(LdaSmi), I16(326),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+@@ -115,7 +115,7 @@ bytecodes: [
+   /*   41 E> */ B(DefineKeyedOwnProperty), R(this), R(0), U8(0), U8(0),
+   /*   46 S> */ B(LdaImmutableCurrentContextSlot), U8(3),
+   /*   51 E> */ B(GetKeyedProperty), R(this), U8(2),
+-                B(Wide), B(LdaSmi), I16(328),
++                B(Wide), B(LdaSmi), I16(325),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+@@ -149,7 +149,7 @@ bytecodes: [
+                 B(Star2),
+                 B(LdaImmutableCurrentContextSlot), U8(3),
+   /*   58 E> */ B(GetKeyedProperty), R(this), U8(2),
+-                B(Wide), B(LdaSmi), I16(329),
++                B(Wide), B(LdaSmi), I16(326),
+                 B(Star3),
+                 B(LdaConstant), U8(0),
+                 B(Star4),
+@@ -181,7 +181,7 @@ bytecodes: [
+   /*   41 E> */ B(DefineKeyedOwnProperty), R(this), R(0), U8(0), U8(0),
+   /*   46 S> */ B(LdaImmutableCurrentContextSlot), U8(3),
+   /*   51 E> */ B(GetKeyedProperty), R(this), U8(2),
+-                B(Wide), B(LdaSmi), I16(328),
++                B(Wide), B(LdaSmi), I16(325),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+diff --git a/test/unittests/interpreter/bytecode_expectations/PrivateMethodAccess.golden b/test/unittests/interpreter/bytecode_expectations/PrivateMethodAccess.golden
+index f15738ca4e..b7818a3a86 100644
+--- a/test/unittests/interpreter/bytecode_expectations/PrivateMethodAccess.golden
++++ b/test/unittests/interpreter/bytecode_expectations/PrivateMethodAccess.golden
+@@ -58,7 +58,7 @@ bytecodes: [
+                 B(Star2),
+                 B(LdaImmutableCurrentContextSlot), U8(3),
+   /*   54 E> */ B(GetKeyedProperty), R(this), U8(2),
+-                B(Wide), B(LdaSmi), I16(327),
++                B(Wide), B(LdaSmi), I16(324),
+                 B(Star3),
+                 B(LdaConstant), U8(0),
+                 B(Star4),
+@@ -91,7 +91,7 @@ bytecodes: [
+   /*   44 E> */ B(DefineKeyedOwnProperty), R(this), R(0), U8(0), U8(0),
+   /*   49 S> */ B(LdaImmutableCurrentContextSlot), U8(3),
+   /*   54 E> */ B(GetKeyedProperty), R(this), U8(2),
+-                B(Wide), B(LdaSmi), I16(327),
++                B(Wide), B(LdaSmi), I16(324),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+diff --git a/test/unittests/interpreter/bytecode_expectations/StaticPrivateMethodAccess.golden b/test/unittests/interpreter/bytecode_expectations/StaticPrivateMethodAccess.golden
+index 737a94acc8..91667276bb 100644
+--- a/test/unittests/interpreter/bytecode_expectations/StaticPrivateMethodAccess.golden
++++ b/test/unittests/interpreter/bytecode_expectations/StaticPrivateMethodAccess.golden
+@@ -24,7 +24,7 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(1),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+@@ -61,13 +61,13 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+   /*   61 E> */ B(CallRuntime), U16(Runtime::kNewTypeError), R(2), U8(2),
+                 B(Throw),
+-                B(Wide), B(LdaSmi), I16(327),
++                B(Wide), B(LdaSmi), I16(324),
+                 B(Star2),
+                 B(LdaConstant), U8(1),
+                 B(Star3),
+@@ -99,13 +99,13 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star1),
+                 B(LdaConstant), U8(0),
+                 B(Star2),
+   /*   61 E> */ B(CallRuntime), U16(Runtime::kNewTypeError), R(1), U8(2),
+                 B(Throw),
+-                B(Wide), B(LdaSmi), I16(327),
++                B(Wide), B(LdaSmi), I16(324),
+                 B(Star1),
+                 B(LdaConstant), U8(1),
+                 B(Star2),
+@@ -145,7 +145,7 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+@@ -167,7 +167,7 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star3),
+                 B(LdaConstant), U8(0),
+                 B(Star4),
+@@ -182,7 +182,7 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+@@ -216,13 +216,13 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star1),
+                 B(LdaConstant), U8(0),
+                 B(Star2),
+   /*   65 E> */ B(CallRuntime), U16(Runtime::kNewTypeError), R(1), U8(2),
+                 B(Throw),
+-                B(Wide), B(LdaSmi), I16(329),
++                B(Wide), B(LdaSmi), I16(326),
+                 B(Star1),
+                 B(LdaConstant), U8(1),
+                 B(Star2),
+@@ -253,13 +253,13 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star1),
+                 B(LdaConstant), U8(0),
+                 B(Star2),
+   /*   58 E> */ B(CallRuntime), U16(Runtime::kNewTypeError), R(1), U8(2),
+                 B(Throw),
+-                B(Wide), B(LdaSmi), I16(328),
++                B(Wide), B(LdaSmi), I16(325),
+                 B(Star1),
+                 B(LdaConstant), U8(1),
+                 B(Star2),
+@@ -292,13 +292,13 @@ bytecodes: [
+                 B(TestReferenceEqual), R(this),
+                 B(Mov), R(this), R(0),
+                 B(JumpIfTrue), U8(16),
+-                B(Wide), B(LdaSmi), I16(321),
++                B(Wide), B(LdaSmi), I16(318),
+                 B(Star2),
+                 B(LdaConstant), U8(0),
+                 B(Star3),
+   /*   65 E> */ B(CallRuntime), U16(Runtime::kNewTypeError), R(2), U8(2),
+                 B(Throw),
+-                B(Wide), B(LdaSmi), I16(329),
++                B(Wide), B(LdaSmi), I16(326),
+                 B(Star2),
+                 B(LdaConstant), U8(1),
+                 B(Star3),
+@@ -327,7 +327,7 @@ bytecode array length: 19
+ bytecodes: [
+   /*   46 S> */ B(LdaImmutableCurrentContextSlot), U8(3),
+   /*   51 E> */ B(GetKeyedProperty), R(this), U8(0),
+-                B(Wide), B(LdaSmi), I16(328),
++                B(Wide), B(LdaSmi), I16(325),
+                 B(Star1),
+                 B(LdaConstant), U8(0),
+                 B(Star2),
+diff --git a/test/unittests/objects/modules-unittest.cc b/test/unittests/objects/modules-unittest.cc
+index 6ecbf67c78..d3d234e516 100644
+--- a/test/unittests/objects/modules-unittest.cc
++++ b/test/unittests/objects/modules-unittest.cc
+@@ -150,27 +150,27 @@ MaybeLocal<Module> ResolveCallbackWithImportAttributes(
+   } else if (specifier->StrictEquals(
+                  String::NewFromUtf8(isolate, "./bar.js").ToLocalChecked())) {
+     CHECK_EQ(3, import_attributes->Length());
+-    Local<String> attribute_key =
++    Local<String> assertion_key =
+         import_attributes->Get(context, 0).As<Value>().As<String>();
+     CHECK(String::NewFromUtf8(isolate, "a")
+               .ToLocalChecked()
+-              ->StrictEquals(attribute_key));
+-    Local<String> attribute_value =
++              ->StrictEquals(assertion_key));
++    Local<String> assertion_value =
+         import_attributes->Get(context, 1).As<Value>().As<String>();
+     CHECK(String::NewFromUtf8(isolate, "b")
+               .ToLocalChecked()
+-              ->StrictEquals(attribute_value));
+-    Local<Data> attribute_source_offset_object =
++              ->StrictEquals(assertion_value));
++    Local<Data> assertion_source_offset_object =
+         import_attributes->Get(context, 2);
+-    Local<Int32> attribute_source_offset_int32 =
+-        attribute_source_offset_object.As<Value>()
++    Local<Int32> assertion_source_offset_int32 =
++        assertion_source_offset_object.As<Value>()
+             ->ToInt32(context)
+             .ToLocalChecked();
+-    int32_t attribute_source_offset = attribute_source_offset_int32->Value();
+-    CHECK_EQ(61, attribute_source_offset);
+-    Location loc = referrer->SourceOffsetToLocation(attribute_source_offset);
++    int32_t assertion_source_offset = assertion_source_offset_int32->Value();
++    CHECK_EQ(65, assertion_source_offset);
++    Location loc = referrer->SourceOffsetToLocation(assertion_source_offset);
+     CHECK_EQ(1, loc.GetLineNumber());
+-    CHECK_EQ(33, loc.GetColumnNumber());
++    CHECK_EQ(35, loc.GetColumnNumber());
+ 
+     return barModule_global.Get(isolate);
+   } else {
+@@ -180,17 +180,17 @@ MaybeLocal<Module> ResolveCallbackWithImportAttributes(
+   }
+ }
+ 
+-TEST_F(ModuleTest, ModuleInstantiationWithImportAttributes) {
+-  bool prev_import_attributes = i::v8_flags.harmony_import_attributes;
+-  i::v8_flags.harmony_import_attributes = true;
++TEST_F(ModuleTest, ModuleInstantiationWithImportAssertions) {
++  bool prev_import_assertions = i::v8_flags.harmony_import_assertions;
++  i::v8_flags.harmony_import_assertions = true;
+   HandleScope scope(isolate());
+   v8::TryCatch try_catch(isolate());
+ 
+   Local<Module> module;
+   {
+     Local<String> source_text = NewString(
+-        "import './foo.js' with { };\n"
+-        "export {} from './bar.js' with { a: 'b' };");
++        "import './foo.js' assert { };\n"
++        "export {} from './bar.js' assert { a: 'b' };");
+     ScriptOrigin origin = ModuleOrigin(NewString("file.js"), isolate());
+     ScriptCompiler::Source source(source_text, origin);
+     module = ScriptCompiler::CompileModule(isolate(), &source).ToLocalChecked();
+@@ -213,7 +213,7 @@ TEST_F(ModuleTest, ModuleInstantiationWithImportAttributes) {
+     CHECK(
+         NewString("./bar.js")->StrictEquals(module_request_1->GetSpecifier()));
+     offset = module_request_1->GetSourceOffset();
+-    CHECK_EQ(43, offset);
++    CHECK_EQ(45, offset);
+     loc = module->SourceOffsetToLocation(offset);
+     CHECK_EQ(1, loc.GetLineNumber());
+     CHECK_EQ(15, loc.GetColumnNumber());
+@@ -221,18 +221,18 @@ TEST_F(ModuleTest, ModuleInstantiationWithImportAttributes) {
+     Local<FixedArray> import_attributes_1 =
+         module_request_1->GetImportAttributes();
+     CHECK_EQ(3, import_attributes_1->Length());
+-    Local<String> attribute_key =
++    Local<String> assertion_key =
+         import_attributes_1->Get(context(), 0).As<String>();
+-    CHECK(NewString("a")->StrictEquals(attribute_key));
+-    Local<String> attribute_value =
++    CHECK(NewString("a")->StrictEquals(assertion_key));
++    Local<String> assertion_value =
+         import_attributes_1->Get(context(), 1).As<String>();
+-    CHECK(NewString("b")->StrictEquals(attribute_value));
+-    int32_t attribute_source_offset =
++    CHECK(NewString("b")->StrictEquals(assertion_value));
++    int32_t assertion_source_offset =
+         import_attributes_1->Get(context(), 2).As<Int32>()->Value();
+-    CHECK_EQ(61, attribute_source_offset);
+-    loc = module->SourceOffsetToLocation(attribute_source_offset);
++    CHECK_EQ(65, assertion_source_offset);
++    loc = module->SourceOffsetToLocation(assertion_source_offset);
+     CHECK_EQ(1, loc.GetLineNumber());
+-    CHECK_EQ(33, loc.GetColumnNumber());
++    CHECK_EQ(35, loc.GetColumnNumber());
+   }
+ 
+   // foo.js
+@@ -275,7 +275,7 @@ TEST_F(ModuleTest, ModuleInstantiationWithImportAttributes) {
+     CHECK_EQ(42, res->Int32Value(context()).FromJust());
+   }
+   CHECK(!try_catch.HasCaught());
+-  i::v8_flags.harmony_import_attributes = prev_import_attributes;
++  i::v8_flags.harmony_import_assertions = prev_import_assertions;
+ 
+   fooModule_global.Reset();
+   barModule_global.Reset();
+diff --git a/test/unittests/parser/parsing-unittest.cc b/test/unittests/parser/parsing-unittest.cc
+index 7b72763298..3a24289029 100644
+--- a/test/unittests/parser/parsing-unittest.cc
++++ b/test/unittests/parser/parsing-unittest.cc
+@@ -4688,7 +4688,7 @@ TEST_F(ParsingTest, ImportExpressionSuccess) {
+ }
+ 
+ TEST_F(ParsingTest, ImportExpressionWithOptionsSuccess) {
+-  i::v8_flags.harmony_import_attributes = true;
++  i::v8_flags.harmony_import_assertions = true;
+ 
+   // clang-format off
+   const char* context_data[][2] = {
+@@ -4818,7 +4818,7 @@ TEST_F(ParsingTest, ImportExpressionErrors) {
+ 
+ TEST_F(ParsingTest, ImportExpressionWithOptionsErrors) {
+   {
+-    i::v8_flags.harmony_import_attributes = true;
++    i::v8_flags.harmony_import_assertions = true;
+ 
+     // clang-format off
+     const char* context_data[][2] = {
+@@ -4893,6 +4893,129 @@ TEST_F(ParsingTest, ImportExpressionWithOptionsErrors) {
+   }
+ }
+ 
++TEST_F(ParsingTest, BasicImportAssertionParsing) {
++  // clang-format off
++  const char* kSources[] = {
++    "import { a as b } from 'm.js' assert { };",
++    "import n from 'n.js' assert { };",
++    "export { a as b } from 'm.js' assert { };",
++    "export * from 'm.js' assert { };",
++    "import 'm.js' assert { };",
++    "import * as foo from 'bar.js' assert { };",
++
++    "import { a as b } from 'm.js' assert { a: 'b' };",
++    "import { a as b } from 'm.js' assert { c: 'd' };",
++    "import { a as b } from 'm.js' assert { 'c': 'd' };",
++    "import { a as b } from 'm.js' assert { a: 'b', 'c': 'd', e: 'f' };",
++    "import { a as b } from 'm.js' assert { 'c': 'd', };",
++    "import n from 'n.js' assert { 'c': 'd' };",
++    "export { a as b } from 'm.js' assert { 'c': 'd' };",
++    "export * from 'm.js' assert { 'c': 'd' };",
++    "import 'm.js' assert { 'c': 'd' };",
++    "import * as foo from 'bar.js' assert { 'c': 'd' };",
++
++    "import { a as b } from 'm.js' assert { \nc: 'd'};",
++    "import { a as b } from 'm.js' assert { c:\n 'd'};",
++    "import { a as b } from 'm.js' assert { c:'d'\n};",
++
++    "import { a as b } from 'm.js' assert { '0': 'b', };",
++  };
++  // clang-format on
++
++  i::v8_flags.harmony_import_assertions = true;
++  i::Isolate* isolate = i_isolate();
++  i::Factory* factory = isolate->factory();
++
++  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
++                                        128 * 1024);
++
++  for (unsigned i = 0; i < arraysize(kSources); ++i) {
++    i::DirectHandle<i::String> source =
++        factory->NewStringFromAsciiChecked(kSources[i]);
++
++    // Show that parsing as a module works
++    {
++      i::Handle<i::Script> script = factory->NewScript(source);
++      i::UnoptimizedCompileState compile_state;
++      i::ReusableUnoptimizedCompileState reusable_state(isolate);
++      i::UnoptimizedCompileFlags flags =
++          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
++      flags.set_is_module(true);
++      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
++      CHECK_PARSE_PROGRAM(&info, script, isolate);
++    }
++
++    // And that parsing a script does not.
++    {
++      i::UnoptimizedCompileState compile_state;
++      i::ReusableUnoptimizedCompileState reusable_state(isolate);
++      i::DirectHandle<i::Script> script = factory->NewScript(source);
++      i::UnoptimizedCompileFlags flags =
++          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
++      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
++      CHECK(!i::parsing::ParseProgram(&info, script, isolate,
++                                      parsing::ReportStatisticsMode::kYes));
++      CHECK(info.pending_error_handler()->has_pending_error());
++    }
++  }
++}
++
++TEST_F(ParsingTest, ImportAssertionParsingErrors) {
++  // clang-format off
++  const char* kErrorSources[] = {
++    "import { a } from 'm.js' assert {;",
++    "import { a } from 'm.js' assert };",
++    "import { a } from 'm.js' , assert { };",
++    "import { a } from 'm.js' assert , { };",
++    "import { a } from 'm.js' assert { , };",
++    "import { a } from 'm.js' assert { b };",
++    "import { a } from 'm.js' assert { 'b' };",
++    "import { a } from 'm.js' assert { for };",
++    "import { a } from 'm.js' assert { assert };",
++    "export { a } assert { };",
++    "export * assert { };",
++
++    "import 'm.js'\n assert { };",
++    "import 'm.js' \nassert { };",
++    "import { a } from 'm.js'\n assert { };",
++    "export * from 'm.js'\n assert { };",
++
++    "import { a } from 'm.js' assert { x: 2 };",
++    "import { a } from 'm.js' assert { b: c };",
++    "import { a } from 'm.js' assert { 'b': c };",
++    "import { a } from 'm.js' assert { , b: c };",
++    "import { a } from 'm.js' assert { a: 'b', a: 'c' };",
++    "import { a } from 'm.js' assert { a: 'b', 'a': 'c' };",
++
++    "import 'm.js' with { a: 'b' };"
++  };
++  // clang-format on
++
++  i::v8_flags.harmony_import_assertions = true;
++  i::v8_flags.harmony_import_attributes = false;
++  i::Isolate* isolate = i_isolate();
++  i::Factory* factory = isolate->factory();
++
++  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
++                                        128 * 1024);
++
++  for (unsigned i = 0; i < arraysize(kErrorSources); ++i) {
++    i::DirectHandle<i::String> source =
++        factory->NewStringFromAsciiChecked(kErrorSources[i]);
++
++    i::DirectHandle<i::Script> script = factory->NewScript(source);
++    i::UnoptimizedCompileState compile_state;
++    i::ReusableUnoptimizedCompileState reusable_state(isolate);
++    i::UnoptimizedCompileFlags flags =
++        i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
++    flags.set_is_module(true);
++    i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
++    CHECK(!i::parsing::ParseProgram(&info, script, isolate,
++                                    parsing::ReportStatisticsMode::kYes));
++    CHECK(info.pending_error_handler()->has_pending_error());
++  }
++}
++
+ TEST_F(ParsingTest, BasicImportAttributesParsing) {
+   // clang-format off
+   const char* kSources[] = {
+@@ -4991,6 +5114,91 @@ TEST_F(ParsingTest, ImportAttributesParsingErrors) {
+   };
+   // clang-format on
+ 
++  i::v8_flags.harmony_import_assertions = false;
++  i::v8_flags.harmony_import_attributes = true;
++  i::Isolate* isolate = i_isolate();
++  i::Factory* factory = isolate->factory();
++
++  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
++                                        128 * 1024);
++
++  for (unsigned i = 0; i < arraysize(kErrorSources); ++i) {
++    i::DirectHandle<i::String> source =
++        factory->NewStringFromAsciiChecked(kErrorSources[i]);
++
++    i::DirectHandle<i::Script> script = factory->NewScript(source);
++    i::UnoptimizedCompileState compile_state;
++    i::ReusableUnoptimizedCompileState reusable_state(isolate);
++    i::UnoptimizedCompileFlags flags =
++        i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
++    flags.set_is_module(true);
++    i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
++    CHECK(!i::parsing::ParseProgram(&info, script, isolate,
++                                    parsing::ReportStatisticsMode::kYes));
++    CHECK(info.pending_error_handler()->has_pending_error());
++  }
++}
++
++TEST_F(ParsingTest, BasicImportAttributesAndAssertionsParsing) {
++  // clang-format off
++  const char* kSources[] = {
++    "import { a } from 'm.js' assert { };",
++    "import { a } from 'm.js' with { };",
++    "import { a } from 'm.js'\n with { };",
++  };
++  // clang-format on
++
++  i::v8_flags.harmony_import_assertions = true;
++  i::v8_flags.harmony_import_attributes = true;
++  i::Isolate* isolate = i_isolate();
++  i::Factory* factory = isolate->factory();
++
++  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
++                                        128 * 1024);
++
++  for (unsigned i = 0; i < arraysize(kSources); ++i) {
++    i::DirectHandle<i::String> source =
++        factory->NewStringFromAsciiChecked(kSources[i]);
++
++    // Show that parsing as a module works
++    {
++      i::Handle<i::Script> script = factory->NewScript(source);
++      i::UnoptimizedCompileState compile_state;
++      i::ReusableUnoptimizedCompileState reusable_state(isolate);
++      i::UnoptimizedCompileFlags flags =
++          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
++      flags.set_is_module(true);
++      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
++      CHECK_PARSE_PROGRAM(&info, script, isolate);
++    }
++
++    // And that parsing a script does not.
++    {
++      i::UnoptimizedCompileState compile_state;
++      i::ReusableUnoptimizedCompileState reusable_state(isolate);
++      i::DirectHandle<i::Script> script = factory->NewScript(source);
++      i::UnoptimizedCompileFlags flags =
++          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
++      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
++      CHECK(!i::parsing::ParseProgram(&info, script, isolate,
++                                      parsing::ReportStatisticsMode::kYes));
++      CHECK(info.pending_error_handler()->has_pending_error());
++    }
++  }
++}
++
++TEST_F(ParsingTest, ImportAttributesAndAssertionsParsingErrors) {
++  // clang-format off
++  const char* kErrorSources[] = {
++    "import { a } from 'm.js'\n assert { };",
++    "import { a } from 'm.js' with { } assert { };",
++    "import { a } from 'm.js' with assert { };",
++    "import { a } from 'm.js' assert { } with { };",
++    "import { a } from 'm.js' assert with { };",
++  };
++  // clang-format on
++
++  i::v8_flags.harmony_import_assertions = true;
+   i::v8_flags.harmony_import_attributes = true;
+   i::Isolate* isolate = i_isolate();
+   i::Factory* factory = isolate->factory();
+@@ -8728,8 +8936,8 @@ TEST_F(ParsingTest, ModuleParsingInternals) {
+   CheckEntry(entry, nullptr, "aa", "aa", 0);
+ }
+ 
+-TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
+-  i::v8_flags.harmony_import_attributes = true;
++TEST_F(ParsingTest, ModuleParsingInternalsWithImportAssertions) {
++  i::v8_flags.harmony_import_assertions = true;
+   i::Isolate* isolate = i_isolate();
+   i::Factory* factory = isolate->factory();
+   isolate->stack_guard()->SetStackLimit(base::Stack::GetCurrentStackPosition() -
+@@ -8737,13 +8945,13 @@ TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
+ 
+   static const char kSource[] =
+       "import { q as z } from 'm.js';"
+-      "import { q as z2 } from 'm.js' with { foo: 'bar'};"
+-      "import { q as z3 } from 'm.js' with { foo2: 'bar'};"
+-      "import { q as z4 } from 'm.js' with { foo: 'bar2'};"
+-      "import { q as z5 } from 'm.js' with { foo: 'bar', foo2: 'bar'};"
+-      "import { q as z6 } from 'n.js' with { foo: 'bar'};"
+-      "import 'm.js' with { foo: 'bar'};"
+-      "export * from 'm.js' with { foo: 'bar', foo2: 'bar'};";
++      "import { q as z2 } from 'm.js' assert { foo: 'bar'};"
++      "import { q as z3 } from 'm.js' assert { foo2: 'bar'};"
++      "import { q as z4 } from 'm.js' assert { foo: 'bar2'};"
++      "import { q as z5 } from 'm.js' assert { foo: 'bar', foo2: 'bar'};"
++      "import { q as z6 } from 'n.js' assert { foo: 'bar'};"
++      "import 'm.js' assert { foo: 'bar'};"
++      "export * from 'm.js' assert { foo: 'bar', foo2: 'bar'};";
+   i::DirectHandle<i::String> source =
+       factory->NewStringFromAsciiChecked(kSource);
+   i::Handle<i::Script> script = factory->NewScript(source);
+@@ -8779,43 +8987,43 @@ TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
+       CHECK(elem->import_attributes()
+                 ->at(foo_string)
+                 .first->IsOneByteEqualTo("bar"));
+-      CHECK_EQ(68, elem->import_attributes()->at(foo_string).second.beg_pos);
++      CHECK_EQ(70, elem->import_attributes()->at(foo_string).second.beg_pos);
+     } else if (elem->index() == 2) {
+       CHECK(elem->specifier()->IsOneByteEqualTo("m.js"));
+       CHECK_EQ(1, elem->import_attributes()->size());
+-      CHECK_EQ(104, elem->position());
++      CHECK_EQ(106, elem->position());
+       CHECK(elem->import_attributes()
+                 ->at(foo2_string)
+                 .first->IsOneByteEqualTo("bar"));
+-      CHECK_EQ(118, elem->import_attributes()->at(foo2_string).second.beg_pos);
++      CHECK_EQ(122, elem->import_attributes()->at(foo2_string).second.beg_pos);
+     } else if (elem->index() == 3) {
+       CHECK(elem->specifier()->IsOneByteEqualTo("m.js"));
+       CHECK_EQ(1, elem->import_attributes()->size());
+-      CHECK_EQ(155, elem->position());
++      CHECK_EQ(159, elem->position());
+       CHECK(elem->import_attributes()
+                 ->at(foo_string)
+                 .first->IsOneByteEqualTo("bar2"));
+-      CHECK_EQ(169, elem->import_attributes()->at(foo_string).second.beg_pos);
++      CHECK_EQ(175, elem->import_attributes()->at(foo_string).second.beg_pos);
+     } else if (elem->index() == 4) {
+       CHECK(elem->specifier()->IsOneByteEqualTo("m.js"));
+       CHECK_EQ(2, elem->import_attributes()->size());
+-      CHECK_EQ(206, elem->position());
++      CHECK_EQ(212, elem->position());
+       CHECK(elem->import_attributes()
+                 ->at(foo_string)
+                 .first->IsOneByteEqualTo("bar"));
+-      CHECK_EQ(220, elem->import_attributes()->at(foo_string).second.beg_pos);
++      CHECK_EQ(228, elem->import_attributes()->at(foo_string).second.beg_pos);
+       CHECK(elem->import_attributes()
+                 ->at(foo2_string)
+                 .first->IsOneByteEqualTo("bar"));
+-      CHECK_EQ(232, elem->import_attributes()->at(foo2_string).second.beg_pos);
++      CHECK_EQ(240, elem->import_attributes()->at(foo2_string).second.beg_pos);
+     } else if (elem->index() == 5) {
+       CHECK(elem->specifier()->IsOneByteEqualTo("n.js"));
+       CHECK_EQ(1, elem->import_attributes()->size());
+-      CHECK_EQ(269, elem->position());
++      CHECK_EQ(277, elem->position());
+       CHECK(elem->import_attributes()
+                 ->at(foo_string)
+                 .first->IsOneByteEqualTo("bar"));
+-      CHECK_EQ(283, elem->import_attributes()->at(foo_string).second.beg_pos);
++      CHECK_EQ(293, elem->import_attributes()->at(foo_string).second.beg_pos);
+     } else {
+       UNREACHABLE();
+     }
+@@ -8823,42 +9031,42 @@ TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
+ }
+ 
+ TEST_F(ParsingTest, ModuleParsingModuleRequestOrdering) {
+-  i::v8_flags.harmony_import_attributes = true;
++  i::v8_flags.harmony_import_assertions = true;
+   i::Isolate* isolate = i_isolate();
+   i::Factory* factory = isolate->factory();
+   isolate->stack_guard()->SetStackLimit(base::Stack::GetCurrentStackPosition() -
+                                         128 * 1024);
+ 
+   static const char kSource[] =
+-      "import 'foo' with { };"
+-      "import 'baaaaaar' with { };"
+-      "import 'aa' with { };"
+-      "import 'a' with { a: 'b' };"
+-      "import 'b' with { };"
+-      "import 'd' with { a: 'b' };"
+-      "import 'c' with { };"
+-      "import 'f' with { };"
+-      "import 'f' with { a: 'b'};"
+-      "import 'g' with { a: 'b' };"
+-      "import 'g' with { };"
+-      "import 'h' with { a: 'd' };"
+-      "import 'h' with { b: 'c' };"
+-      "import 'i' with { b: 'c' };"
+-      "import 'i' with { a: 'd' };"
+-      "import 'j' with { a: 'b' };"
+-      "import 'j' with { a: 'c' };"
+-      "import 'k' with { a: 'c' };"
+-      "import 'k' with { a: 'b' };"
+-      "import 'l' with { a: 'b', e: 'f' };"
+-      "import 'l' with { a: 'c', d: 'g' };"
+-      "import 'm' with { a: 'c', d: 'g' };"
+-      "import 'm' with { a: 'b', e: 'f' };"
+-      "import 'n' with { 'd': '' };"
+-      "import 'n' with { 'a': 'b' };"
+-      "import 'o' with { 'a': 'b' };"
+-      "import 'o' with { 'd': '' };"
+-      "import 'p' with { 'z': 'c' };"
+-      "import 'p' with { 'a': 'c', 'b': 'c' };";
++      "import 'foo' assert { };"
++      "import 'baaaaaar' assert { };"
++      "import 'aa' assert { };"
++      "import 'a' assert { a: 'b' };"
++      "import 'b' assert { };"
++      "import 'd' assert { a: 'b' };"
++      "import 'c' assert { };"
++      "import 'f' assert { };"
++      "import 'f' assert { a: 'b'};"
++      "import 'g' assert { a: 'b' };"
++      "import 'g' assert { };"
++      "import 'h' assert { a: 'd' };"
++      "import 'h' assert { b: 'c' };"
++      "import 'i' assert { b: 'c' };"
++      "import 'i' assert { a: 'd' };"
++      "import 'j' assert { a: 'b' };"
++      "import 'j' assert { a: 'c' };"
++      "import 'k' assert { a: 'c' };"
++      "import 'k' assert { a: 'b' };"
++      "import 'l' assert { a: 'b', e: 'f' };"
++      "import 'l' assert { a: 'c', d: 'g' };"
++      "import 'm' assert { a: 'c', d: 'g' };"
++      "import 'm' assert { a: 'b', e: 'f' };"
++      "import 'n' assert { 'd': '' };"
++      "import 'n' assert { 'a': 'b' };"
++      "import 'o' assert { 'a': 'b' };"
++      "import 'o' assert { 'd': '' };"
++      "import 'p' assert { 'z': 'c' };"
++      "import 'p' assert { 'a': 'c', 'b': 'c' };";
+   i::DirectHandle<i::String> source =
+       factory->NewStringFromAsciiChecked(kSource);
+   i::Handle<i::Script> script = factory->NewScript(source);
+@@ -9091,22 +9299,22 @@ TEST_F(ParsingTest, ModuleParsingModuleRequestOrdering) {
+             .first->IsOneByteEqualTo("c"));
+ }
+ 
+-TEST_F(ParsingTest, ModuleParsingImportAttributesKeySorting) {
+-  i::v8_flags.harmony_import_attributes = true;
++TEST_F(ParsingTest, ModuleParsingImportAssertionKeySorting) {
++  i::v8_flags.harmony_import_assertions = true;
+   i::Isolate* isolate = i_isolate();
+   i::Factory* factory = isolate->factory();
+   isolate->stack_guard()->SetStackLimit(base::Stack::GetCurrentStackPosition() -
+                                         128 * 1024);
+ 
+   static const char kSource[] =
+-      "import 'a' with { 'b':'z', 'a': 'c' };"
+-      "import 'b' with { 'aaaaaa': 'c', 'b': 'z' };"
+-      "import 'c' with { '': 'c', 'b': 'z' };"
+-      "import 'd' with { 'aabbbb': 'c', 'aaabbb': 'z' };"
++      "import 'a' assert { 'b':'z', 'a': 'c' };"
++      "import 'b' assert { 'aaaaaa': 'c', 'b': 'z' };"
++      "import 'c' assert { '': 'c', 'b': 'z' };"
++      "import 'd' assert { 'aabbbb': 'c', 'aaabbb': 'z' };"
+       // zzzz\u0005 is a one-byte string, yyyy\u0100 is a two-byte string.
+-      "import 'e' with { 'zzzz\\u0005': 'second', 'yyyy\\u0100': 'first' };"
++      "import 'e' assert { 'zzzz\\u0005': 'second', 'yyyy\\u0100': 'first' };"
+       // Both keys are two-byte strings.
+-      "import 'f' with { 'xxxx\\u0005\\u0101': 'first', "
++      "import 'f' assert { 'xxxx\\u0005\\u0101': 'first', "
+       "'xxxx\\u0100\\u0101': 'second' };";
+   i::DirectHandle<i::String> source =
+       factory->NewStringFromAsciiChecked(kSource);
+@@ -10631,6 +10839,8 @@ TEST_F(ParsingTest, ImportSourceAttributesNotAllowed) {
+       &v8_flags.js_source_phase_imports, true);
+   i::FlagScope<bool> f_harmony_import_attributes(
+       &v8_flags.harmony_import_attributes, true);
++  i::FlagScope<bool> f_harmony_import_assertions(
++      &v8_flags.harmony_import_assertions, true);
+   // clang-format off
+   const char* context_data[][2] = {
+     {"", ""},
+@@ -10725,6 +10935,8 @@ TEST_F(ParsingTest, ImportCallSourceAttributesNotAllowed) {
+       &v8_flags.js_source_phase_imports, true);
+   i::FlagScope<bool> f_harmony_import_attributes(
+       &v8_flags.harmony_import_attributes, true);
++  i::FlagScope<bool> f_harmony_import_assertions(
++      &v8_flags.harmony_import_assertions, true);
+ 
+   // clang-format off
+   const char* context_data[][2] = {
+-- 
+2.44.0
+
