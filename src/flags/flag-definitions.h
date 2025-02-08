@@ -275,7 +275,8 @@ DEFINE_BOOL(js_shipping, true, "enable all shipped JavaScript features")
 #define HARMONY_INPROGRESS_BASE(V)                                             \
   V(harmony_temporal, "Temporal")                                              \
   V(harmony_shadow_realm, "harmony ShadowRealm")                               \
-  V(harmony_struct, "harmony structs, shared structs, and shared arrays")
+  V(harmony_struct, "harmony structs, shared structs, and shared arrays")      \
+  V(harmony_import_assertions, "harmony import assertions (deprecated)")
 
 #define JAVASCRIPT_INPROGRESS_FEATURES_BASE(V) \
   V(js_decorators, "decorators")               \
