@@ -6740,7 +6740,8 @@ MaybeDirectHandle<FixedArray> Isolate::GetImportAttributesFromArgument(
 
   // The parser shouldn't have allowed the second argument to import() if
   // the flag wasn't enabled.
-  DCHECK(v8_flags.harmony_import_attributes);
+  DCHECK(v8_flags.harmony_import_assertions ||
+         v8_flags.harmony_import_attributes);
 
   if (!IsJSReceiver(*import_options_argument)) {
     this->Throw(
@@ -6764,62 +6765,87 @@ MaybeDirectHandle<FixedArray> Isolate::GetImportAttributesFromArgument(
     }
   }
 
-  // If there is no 'with' option in the options bag, it's not an error. Just do
-  // the import() as if no attributes were provided.
+  if (v8_flags.harmony_import_assertions &&
+      (!v8_flags.harmony_import_attributes ||
+       IsUndefined(*import_attributes_object))) {
+    Handle<Name> assert_key = factory()->assert_string();
+    if (!JSReceiver::GetProperty(this, import_options_argument_receiver,
+                                 assert_key)
+             .ToHandle(&import_attributes_object)) {
+      // This can happen if the property has a getter function that throws
+      // an error.
+      return MaybeHandle<FixedArray>();
+    }
+
+    if (V8_UNLIKELY(!IsUndefined(*import_attributes_object))) {
+      MessageLocation* location = nullptr;
+      MessageLocation computed_location;
+      if (ComputeLocation(&computed_location)) {
+        location = &computed_location;
+      }
+      DirectHandle<JSMessageObject> message = MessageHandler::MakeMessageObject(
+          this, MessageTemplate::kImportAssertDeprecated, location,
+          factory()->NewStringFromAsciiChecked("V8 v12.6 and Chrome 126"));
+      message->set_error_level(v8::Isolate::kMessageWarning);
+      MessageHandler::ReportMessage(this, location, message);
+    }
+  }
+
+  // If there is no 'with' or 'assert' option in the options bag, it's not an
+  // error. Just do the import() as if no assertions were provided.
   if (IsUndefined(*import_attributes_object)) return import_attributes_array;
 
   if (!IsJSReceiver(*import_attributes_object)) {
     this->Throw(
-        *factory()->NewTypeError(MessageTemplate::kNonObjectAttributesOption));
-    return MaybeDirectHandle<FixedArray>();
+        *factory()->NewTypeError(MessageTemplate::kNonObjectAssertOption));
+    return MaybeHandle<FixedArray>();
   }
 
   DirectHandle<JSReceiver> import_attributes_object_receiver =
       Cast<JSReceiver>(import_attributes_object);
 
-  DirectHandle<FixedArray> attribute_keys;
+  Handle<FixedArray> assertion_keys;
   if (!KeyAccumulator::GetKeys(this, import_attributes_object_receiver,
                                KeyCollectionMode::kOwnOnly, ENUMERABLE_STRINGS,
                                GetKeysConversion::kConvertToString)
-           .ToHandle(&attribute_keys)) {
-    // This happens if the attributes object is a Proxy whose ownKeys() or
+           .ToHandle(&assertion_keys)) {
+    // This happens if the assertions object is a Proxy whose ownKeys() or
     // getOwnPropertyDescriptor() trap throws.
     return MaybeDirectHandle<FixedArray>();
   }
 
   bool has_non_string_attribute = false;
 
-  // The attributes will be passed to the host in the form: [key1,
+  // The assertions will be passed to the host in the form: [key1,
   // value1, key2, value2, ...].
   constexpr size_t kAttributeEntrySizeForDynamicImport = 2;
   import_attributes_array = factory()->NewFixedArray(static_cast<int>(
-      attribute_keys->length() * kAttributeEntrySizeForDynamicImport));
-  for (int i = 0; i < attribute_keys->length(); i++) {
-    DirectHandle<String> attribute_key(Cast<String>(attribute_keys->get(i)),
-                                       this);
-    DirectHandle<Object> attribute_value;
+      assertion_keys->length() * kAttributeEntrySizeForDynamicImport));
+  for (int i = 0; i < assertion_keys->length(); i++) {
+    Handle<String> assertion_key(Cast<String>(assertion_keys->get(i)), this);
+    Handle<Object> assertion_value;
     if (!Object::GetPropertyOrElement(this, import_attributes_object_receiver,
-                                      attribute_key)
-             .ToHandle(&attribute_value)) {
+                                      assertion_key)
+             .ToHandle(&assertion_value)) {
       // This can happen if the property has a getter function that throws
       // an error.
       return MaybeDirectHandle<FixedArray>();
     }
 
-    if (!IsString(*attribute_value)) {
+    if (!IsString(*assertion_value)) {
       has_non_string_attribute = true;
     }
 
     import_attributes_array->set((i * kAttributeEntrySizeForDynamicImport),
-                                 *attribute_key);
+                                 *assertion_key);
     import_attributes_array->set((i * kAttributeEntrySizeForDynamicImport) + 1,
-                                 *attribute_value);
+                                 *assertion_value);
   }
 
   if (has_non_string_attribute) {
     this->Throw(*factory()->NewTypeError(
-        MessageTemplate::kNonStringImportAttributeValue));
-    return MaybeDirectHandle<FixedArray>();
+        MessageTemplate::kNonStringImportAssertionValue));
+    return MaybeHandle<FixedArray>();
   }
 
   return import_attributes_array;
