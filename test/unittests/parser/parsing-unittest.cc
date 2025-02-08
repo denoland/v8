@@ -4688,7 +4688,7 @@ TEST_F(ParsingTest, ImportExpressionSuccess) {
 }
 
 TEST_F(ParsingTest, ImportExpressionWithOptionsSuccess) {
-  i::v8_flags.harmony_import_attributes = true;
+  i::v8_flags.harmony_import_assertions = true;
 
   // clang-format off
   const char* context_data[][2] = {
@@ -4818,7 +4818,7 @@ TEST_F(ParsingTest, ImportExpressionErrors) {
 
 TEST_F(ParsingTest, ImportExpressionWithOptionsErrors) {
   {
-    i::v8_flags.harmony_import_attributes = true;
+    i::v8_flags.harmony_import_assertions = true;
 
     // clang-format off
     const char* context_data[][2] = {
@@ -4890,6 +4890,129 @@ TEST_F(ParsingTest, ImportExpressionWithOptionsErrors) {
     // clang-format on
     RunParserSyncTest(context_data, data, kError);
     RunModuleParserSyncTest(context_data, data, kError);
+  }
+}
+
+TEST_F(ParsingTest, BasicImportAssertionParsing) {
+  // clang-format off
+  const char* kSources[] = {
+    "import { a as b } from 'm.js' assert { };",
+    "import n from 'n.js' assert { };",
+    "export { a as b } from 'm.js' assert { };",
+    "export * from 'm.js' assert { };",
+    "import 'm.js' assert { };",
+    "import * as foo from 'bar.js' assert { };",
+
+    "import { a as b } from 'm.js' assert { a: 'b' };",
+    "import { a as b } from 'm.js' assert { c: 'd' };",
+    "import { a as b } from 'm.js' assert { 'c': 'd' };",
+    "import { a as b } from 'm.js' assert { a: 'b', 'c': 'd', e: 'f' };",
+    "import { a as b } from 'm.js' assert { 'c': 'd', };",
+    "import n from 'n.js' assert { 'c': 'd' };",
+    "export { a as b } from 'm.js' assert { 'c': 'd' };",
+    "export * from 'm.js' assert { 'c': 'd' };",
+    "import 'm.js' assert { 'c': 'd' };",
+    "import * as foo from 'bar.js' assert { 'c': 'd' };",
+
+    "import { a as b } from 'm.js' assert { \nc: 'd'};",
+    "import { a as b } from 'm.js' assert { c:\n 'd'};",
+    "import { a as b } from 'm.js' assert { c:'d'\n};",
+
+    "import { a as b } from 'm.js' assert { '0': 'b', };",
+  };
+  // clang-format on
+
+  i::v8_flags.harmony_import_assertions = true;
+  i::Isolate* isolate = i_isolate();
+  i::Factory* factory = isolate->factory();
+
+  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
+                                        128 * 1024);
+
+  for (unsigned i = 0; i < arraysize(kSources); ++i) {
+    i::DirectHandle<i::String> source =
+        factory->NewStringFromAsciiChecked(kSources[i]);
+
+    // Show that parsing as a module works
+    {
+      i::Handle<i::Script> script = factory->NewScript(source);
+      i::UnoptimizedCompileState compile_state;
+      i::ReusableUnoptimizedCompileState reusable_state(isolate);
+      i::UnoptimizedCompileFlags flags =
+          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
+      flags.set_is_module(true);
+      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
+      CHECK_PARSE_PROGRAM(&info, script, isolate);
+    }
+
+    // And that parsing a script does not.
+    {
+      i::UnoptimizedCompileState compile_state;
+      i::ReusableUnoptimizedCompileState reusable_state(isolate);
+      i::DirectHandle<i::Script> script = factory->NewScript(source);
+      i::UnoptimizedCompileFlags flags =
+          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
+      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
+      CHECK(!i::parsing::ParseProgram(&info, script, isolate,
+                                      parsing::ReportStatisticsMode::kYes));
+      CHECK(info.pending_error_handler()->has_pending_error());
+    }
+  }
+}
+
+TEST_F(ParsingTest, ImportAssertionParsingErrors) {
+  // clang-format off
+  const char* kErrorSources[] = {
+    "import { a } from 'm.js' assert {;",
+    "import { a } from 'm.js' assert };",
+    "import { a } from 'm.js' , assert { };",
+    "import { a } from 'm.js' assert , { };",
+    "import { a } from 'm.js' assert { , };",
+    "import { a } from 'm.js' assert { b };",
+    "import { a } from 'm.js' assert { 'b' };",
+    "import { a } from 'm.js' assert { for };",
+    "import { a } from 'm.js' assert { assert };",
+    "export { a } assert { };",
+    "export * assert { };",
+
+    "import 'm.js'\n assert { };",
+    "import 'm.js' \nassert { };",
+    "import { a } from 'm.js'\n assert { };",
+    "export * from 'm.js'\n assert { };",
+
+    "import { a } from 'm.js' assert { x: 2 };",
+    "import { a } from 'm.js' assert { b: c };",
+    "import { a } from 'm.js' assert { 'b': c };",
+    "import { a } from 'm.js' assert { , b: c };",
+    "import { a } from 'm.js' assert { a: 'b', a: 'c' };",
+    "import { a } from 'm.js' assert { a: 'b', 'a': 'c' };",
+
+    "import 'm.js' with { a: 'b' };"
+  };
+  // clang-format on
+
+  i::v8_flags.harmony_import_assertions = true;
+  i::v8_flags.harmony_import_attributes = false;
+  i::Isolate* isolate = i_isolate();
+  i::Factory* factory = isolate->factory();
+
+  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
+                                        128 * 1024);
+
+  for (unsigned i = 0; i < arraysize(kErrorSources); ++i) {
+    i::DirectHandle<i::String> source =
+        factory->NewStringFromAsciiChecked(kErrorSources[i]);
+
+    i::DirectHandle<i::Script> script = factory->NewScript(source);
+    i::UnoptimizedCompileState compile_state;
+    i::ReusableUnoptimizedCompileState reusable_state(isolate);
+    i::UnoptimizedCompileFlags flags =
+        i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
+    flags.set_is_module(true);
+    i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
+    CHECK(!i::parsing::ParseProgram(&info, script, isolate,
+                                    parsing::ReportStatisticsMode::kYes));
+    CHECK(info.pending_error_handler()->has_pending_error());
   }
 }
 
@@ -4991,6 +5114,91 @@ TEST_F(ParsingTest, ImportAttributesParsingErrors) {
   };
   // clang-format on
 
+  i::v8_flags.harmony_import_assertions = false;
+  i::v8_flags.harmony_import_attributes = true;
+  i::Isolate* isolate = i_isolate();
+  i::Factory* factory = isolate->factory();
+
+  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
+                                        128 * 1024);
+
+  for (unsigned i = 0; i < arraysize(kErrorSources); ++i) {
+    i::DirectHandle<i::String> source =
+        factory->NewStringFromAsciiChecked(kErrorSources[i]);
+
+    i::DirectHandle<i::Script> script = factory->NewScript(source);
+    i::UnoptimizedCompileState compile_state;
+    i::ReusableUnoptimizedCompileState reusable_state(isolate);
+    i::UnoptimizedCompileFlags flags =
+        i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
+    flags.set_is_module(true);
+    i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
+    CHECK(!i::parsing::ParseProgram(&info, script, isolate,
+                                    parsing::ReportStatisticsMode::kYes));
+    CHECK(info.pending_error_handler()->has_pending_error());
+  }
+}
+
+TEST_F(ParsingTest, BasicImportAttributesAndAssertionsParsing) {
+  // clang-format off
+  const char* kSources[] = {
+    "import { a } from 'm.js' assert { };",
+    "import { a } from 'm.js' with { };",
+    "import { a } from 'm.js'\n with { };",
+  };
+  // clang-format on
+
+  i::v8_flags.harmony_import_assertions = true;
+  i::v8_flags.harmony_import_attributes = true;
+  i::Isolate* isolate = i_isolate();
+  i::Factory* factory = isolate->factory();
+
+  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
+                                        128 * 1024);
+
+  for (unsigned i = 0; i < arraysize(kSources); ++i) {
+    i::DirectHandle<i::String> source =
+        factory->NewStringFromAsciiChecked(kSources[i]);
+
+    // Show that parsing as a module works
+    {
+      i::Handle<i::Script> script = factory->NewScript(source);
+      i::UnoptimizedCompileState compile_state;
+      i::ReusableUnoptimizedCompileState reusable_state(isolate);
+      i::UnoptimizedCompileFlags flags =
+          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
+      flags.set_is_module(true);
+      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
+      CHECK_PARSE_PROGRAM(&info, script, isolate);
+    }
+
+    // And that parsing a script does not.
+    {
+      i::UnoptimizedCompileState compile_state;
+      i::ReusableUnoptimizedCompileState reusable_state(isolate);
+      i::DirectHandle<i::Script> script = factory->NewScript(source);
+      i::UnoptimizedCompileFlags flags =
+          i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
+      i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
+      CHECK(!i::parsing::ParseProgram(&info, script, isolate,
+                                      parsing::ReportStatisticsMode::kYes));
+      CHECK(info.pending_error_handler()->has_pending_error());
+    }
+  }
+}
+
+TEST_F(ParsingTest, ImportAttributesAndAssertionsParsingErrors) {
+  // clang-format off
+  const char* kErrorSources[] = {
+    "import { a } from 'm.js'\n assert { };",
+    "import { a } from 'm.js' with { } assert { };",
+    "import { a } from 'm.js' with assert { };",
+    "import { a } from 'm.js' assert { } with { };",
+    "import { a } from 'm.js' assert with { };",
+  };
+  // clang-format on
+
+  i::v8_flags.harmony_import_assertions = true;
   i::v8_flags.harmony_import_attributes = true;
   i::Isolate* isolate = i_isolate();
   i::Factory* factory = isolate->factory();
@@ -8728,8 +8936,8 @@ TEST_F(ParsingTest, ModuleParsingInternals) {
   CheckEntry(entry, nullptr, "aa", "aa", 0);
 }
 
-TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
-  i::v8_flags.harmony_import_attributes = true;
+TEST_F(ParsingTest, ModuleParsingInternalsWithImportAssertions) {
+  i::v8_flags.harmony_import_assertions = true;
   i::Isolate* isolate = i_isolate();
   i::Factory* factory = isolate->factory();
   isolate->stack_guard()->SetStackLimit(base::Stack::GetCurrentStackPosition() -
@@ -8737,13 +8945,13 @@ TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
 
   static const char kSource[] =
       "import { q as z } from 'm.js';"
-      "import { q as z2 } from 'm.js' with { foo: 'bar'};"
-      "import { q as z3 } from 'm.js' with { foo2: 'bar'};"
-      "import { q as z4 } from 'm.js' with { foo: 'bar2'};"
-      "import { q as z5 } from 'm.js' with { foo: 'bar', foo2: 'bar'};"
-      "import { q as z6 } from 'n.js' with { foo: 'bar'};"
-      "import 'm.js' with { foo: 'bar'};"
-      "export * from 'm.js' with { foo: 'bar', foo2: 'bar'};";
+      "import { q as z2 } from 'm.js' assert { foo: 'bar'};"
+      "import { q as z3 } from 'm.js' assert { foo2: 'bar'};"
+      "import { q as z4 } from 'm.js' assert { foo: 'bar2'};"
+      "import { q as z5 } from 'm.js' assert { foo: 'bar', foo2: 'bar'};"
+      "import { q as z6 } from 'n.js' assert { foo: 'bar'};"
+      "import 'm.js' assert { foo: 'bar'};"
+      "export * from 'm.js' assert { foo: 'bar', foo2: 'bar'};";
   i::DirectHandle<i::String> source =
       factory->NewStringFromAsciiChecked(kSource);
   i::Handle<i::Script> script = factory->NewScript(source);
@@ -8779,43 +8987,43 @@ TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
       CHECK(elem->import_attributes()
                 ->at(foo_string)
                 .first->IsOneByteEqualTo("bar"));
-      CHECK_EQ(68, elem->import_attributes()->at(foo_string).second.beg_pos);
+      CHECK_EQ(70, elem->import_attributes()->at(foo_string).second.beg_pos);
     } else if (elem->index() == 2) {
       CHECK(elem->specifier()->IsOneByteEqualTo("m.js"));
       CHECK_EQ(1, elem->import_attributes()->size());
-      CHECK_EQ(104, elem->position());
+      CHECK_EQ(106, elem->position());
       CHECK(elem->import_attributes()
                 ->at(foo2_string)
                 .first->IsOneByteEqualTo("bar"));
-      CHECK_EQ(118, elem->import_attributes()->at(foo2_string).second.beg_pos);
+      CHECK_EQ(122, elem->import_attributes()->at(foo2_string).second.beg_pos);
     } else if (elem->index() == 3) {
       CHECK(elem->specifier()->IsOneByteEqualTo("m.js"));
       CHECK_EQ(1, elem->import_attributes()->size());
-      CHECK_EQ(155, elem->position());
+      CHECK_EQ(159, elem->position());
       CHECK(elem->import_attributes()
                 ->at(foo_string)
                 .first->IsOneByteEqualTo("bar2"));
-      CHECK_EQ(169, elem->import_attributes()->at(foo_string).second.beg_pos);
+      CHECK_EQ(175, elem->import_attributes()->at(foo_string).second.beg_pos);
     } else if (elem->index() == 4) {
       CHECK(elem->specifier()->IsOneByteEqualTo("m.js"));
       CHECK_EQ(2, elem->import_attributes()->size());
-      CHECK_EQ(206, elem->position());
+      CHECK_EQ(212, elem->position());
       CHECK(elem->import_attributes()
                 ->at(foo_string)
                 .first->IsOneByteEqualTo("bar"));
-      CHECK_EQ(220, elem->import_attributes()->at(foo_string).second.beg_pos);
+      CHECK_EQ(228, elem->import_attributes()->at(foo_string).second.beg_pos);
       CHECK(elem->import_attributes()
                 ->at(foo2_string)
                 .first->IsOneByteEqualTo("bar"));
-      CHECK_EQ(232, elem->import_attributes()->at(foo2_string).second.beg_pos);
+      CHECK_EQ(240, elem->import_attributes()->at(foo2_string).second.beg_pos);
     } else if (elem->index() == 5) {
       CHECK(elem->specifier()->IsOneByteEqualTo("n.js"));
       CHECK_EQ(1, elem->import_attributes()->size());
-      CHECK_EQ(269, elem->position());
+      CHECK_EQ(277, elem->position());
       CHECK(elem->import_attributes()
                 ->at(foo_string)
                 .first->IsOneByteEqualTo("bar"));
-      CHECK_EQ(283, elem->import_attributes()->at(foo_string).second.beg_pos);
+      CHECK_EQ(293, elem->import_attributes()->at(foo_string).second.beg_pos);
     } else {
       UNREACHABLE();
     }
@@ -8823,42 +9031,42 @@ TEST_F(ParsingTest, ModuleParsingInternalsWithImportAttributes) {
 }
 
 TEST_F(ParsingTest, ModuleParsingModuleRequestOrdering) {
-  i::v8_flags.harmony_import_attributes = true;
+  i::v8_flags.harmony_import_assertions = true;
   i::Isolate* isolate = i_isolate();
   i::Factory* factory = isolate->factory();
   isolate->stack_guard()->SetStackLimit(base::Stack::GetCurrentStackPosition() -
                                         128 * 1024);
 
   static const char kSource[] =
-      "import 'foo' with { };"
-      "import 'baaaaaar' with { };"
-      "import 'aa' with { };"
-      "import 'a' with { a: 'b' };"
-      "import 'b' with { };"
-      "import 'd' with { a: 'b' };"
-      "import 'c' with { };"
-      "import 'f' with { };"
-      "import 'f' with { a: 'b'};"
-      "import 'g' with { a: 'b' };"
-      "import 'g' with { };"
-      "import 'h' with { a: 'd' };"
-      "import 'h' with { b: 'c' };"
-      "import 'i' with { b: 'c' };"
-      "import 'i' with { a: 'd' };"
-      "import 'j' with { a: 'b' };"
-      "import 'j' with { a: 'c' };"
-      "import 'k' with { a: 'c' };"
-      "import 'k' with { a: 'b' };"
-      "import 'l' with { a: 'b', e: 'f' };"
-      "import 'l' with { a: 'c', d: 'g' };"
-      "import 'm' with { a: 'c', d: 'g' };"
-      "import 'm' with { a: 'b', e: 'f' };"
-      "import 'n' with { 'd': '' };"
-      "import 'n' with { 'a': 'b' };"
-      "import 'o' with { 'a': 'b' };"
-      "import 'o' with { 'd': '' };"
-      "import 'p' with { 'z': 'c' };"
-      "import 'p' with { 'a': 'c', 'b': 'c' };";
+      "import 'foo' assert { };"
+      "import 'baaaaaar' assert { };"
+      "import 'aa' assert { };"
+      "import 'a' assert { a: 'b' };"
+      "import 'b' assert { };"
+      "import 'd' assert { a: 'b' };"
+      "import 'c' assert { };"
+      "import 'f' assert { };"
+      "import 'f' assert { a: 'b'};"
+      "import 'g' assert { a: 'b' };"
+      "import 'g' assert { };"
+      "import 'h' assert { a: 'd' };"
+      "import 'h' assert { b: 'c' };"
+      "import 'i' assert { b: 'c' };"
+      "import 'i' assert { a: 'd' };"
+      "import 'j' assert { a: 'b' };"
+      "import 'j' assert { a: 'c' };"
+      "import 'k' assert { a: 'c' };"
+      "import 'k' assert { a: 'b' };"
+      "import 'l' assert { a: 'b', e: 'f' };"
+      "import 'l' assert { a: 'c', d: 'g' };"
+      "import 'm' assert { a: 'c', d: 'g' };"
+      "import 'm' assert { a: 'b', e: 'f' };"
+      "import 'n' assert { 'd': '' };"
+      "import 'n' assert { 'a': 'b' };"
+      "import 'o' assert { 'a': 'b' };"
+      "import 'o' assert { 'd': '' };"
+      "import 'p' assert { 'z': 'c' };"
+      "import 'p' assert { 'a': 'c', 'b': 'c' };";
   i::DirectHandle<i::String> source =
       factory->NewStringFromAsciiChecked(kSource);
   i::Handle<i::Script> script = factory->NewScript(source);
@@ -9091,22 +9299,22 @@ TEST_F(ParsingTest, ModuleParsingModuleRequestOrdering) {
             .first->IsOneByteEqualTo("c"));
 }
 
-TEST_F(ParsingTest, ModuleParsingImportAttributesKeySorting) {
-  i::v8_flags.harmony_import_attributes = true;
+TEST_F(ParsingTest, ModuleParsingImportAssertionKeySorting) {
+  i::v8_flags.harmony_import_assertions = true;
   i::Isolate* isolate = i_isolate();
   i::Factory* factory = isolate->factory();
   isolate->stack_guard()->SetStackLimit(base::Stack::GetCurrentStackPosition() -
                                         128 * 1024);
 
   static const char kSource[] =
-      "import 'a' with { 'b':'z', 'a': 'c' };"
-      "import 'b' with { 'aaaaaa': 'c', 'b': 'z' };"
-      "import 'c' with { '': 'c', 'b': 'z' };"
-      "import 'd' with { 'aabbbb': 'c', 'aaabbb': 'z' };"
+      "import 'a' assert { 'b':'z', 'a': 'c' };"
+      "import 'b' assert { 'aaaaaa': 'c', 'b': 'z' };"
+      "import 'c' assert { '': 'c', 'b': 'z' };"
+      "import 'd' assert { 'aabbbb': 'c', 'aaabbb': 'z' };"
       // zzzz\u0005 is a one-byte string, yyyy\u0100 is a two-byte string.
-      "import 'e' with { 'zzzz\\u0005': 'second', 'yyyy\\u0100': 'first' };"
+      "import 'e' assert { 'zzzz\\u0005': 'second', 'yyyy\\u0100': 'first' };"
       // Both keys are two-byte strings.
-      "import 'f' with { 'xxxx\\u0005\\u0101': 'first', "
+      "import 'f' assert { 'xxxx\\u0005\\u0101': 'first', "
       "'xxxx\\u0100\\u0101': 'second' };";
   i::DirectHandle<i::String> source =
       factory->NewStringFromAsciiChecked(kSource);
@@ -10631,6 +10839,8 @@ TEST_F(ParsingTest, ImportSourceAttributesNotAllowed) {
       &v8_flags.js_source_phase_imports, true);
   i::FlagScope<bool> f_harmony_import_attributes(
       &v8_flags.harmony_import_attributes, true);
+  i::FlagScope<bool> f_harmony_import_assertions(
+      &v8_flags.harmony_import_assertions, true);
   // clang-format off
   const char* context_data[][2] = {
     {"", ""},
@@ -10725,6 +10935,8 @@ TEST_F(ParsingTest, ImportCallSourceAttributesNotAllowed) {
       &v8_flags.js_source_phase_imports, true);
   i::FlagScope<bool> f_harmony_import_attributes(
       &v8_flags.harmony_import_attributes, true);
+  i::FlagScope<bool> f_harmony_import_assertions(
+      &v8_flags.harmony_import_assertions, true);
 
   // clang-format off
   const char* context_data[][2] = {

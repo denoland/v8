@@ -4,5 +4,6 @@
 //
 // MODULE
 //
+// Flags: --harmony-import-assertions
 
-import "modules-skip-1-import-attributes-fail.mjs" with { type: "notARealType"}
+import "modules-skip-1-import-assertions-fail.mjs" assert { type: "notARealType"}
