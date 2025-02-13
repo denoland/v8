@@ -1,0 +1,58 @@
+From c1b30364b1607b275ac9e6c7fc7c291408edccaa Mon Sep 17 00:00:00 2001
+From: Thibaud Michaud <thibaudm@chromium.org>
+Date: Mon, 27 Jan 2025 14:45:37 +0100
+Subject: [PATCH] [wasm][jspi] Define JS stack limit using stack start
+
+The JS stack limit is currently defined as the current SP minus the
+stack size. Define it as the stack start minus the stack size instead so
+that it does not depend on the current stack position at initialization.
+In particular, this makes the calculation of the stack bounds in
+IsOnCentralStack consistent with this definition.
+
+R=clemensb@chromium.org
+
+Bug: 385424176
+Change-Id: I080c553a44389e3759dc7e5c4f634751eaf8ac83
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/6172269
+Commit-Queue: Thibaud Michaud <thibaudm@chromium.org>
+Reviewed-by: Jakob Kummerow <jkummerow@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#98632}
+---
+ src/common/globals.h         | 5 +----
+ src/execution/stack-guard.cc | 4 ++--
+ 2 files changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/src/common/globals.h b/src/common/globals.h
+index 92aad3ecdb89..8ab7cf18e059 100644
+--- a/src/common/globals.h
++++ b/src/common/globals.h
+@@ -161,13 +161,10 @@ static_assert(V8_ENABLE_LEAPTIERING_BOOL);
+ #define ENABLE_CONTROL_FLOW_INTEGRITY_BOOL false
+ #endif
+ 
+-#if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64
++#if V8_TARGET_ARCH_ARM
+ // Set stack limit lower for ARM and ARM64 than for other architectures because:
+ //  - on Arm stack allocating MacroAssembler takes 120K bytes.
+ //    See issue crbug.com/405338
+-//  - on Arm64 when running in single-process mode for Android WebView, when
+-//    initializing V8 we already have a large stack and so have to set the
+-//    limit lower. See issue crbug.com/v8/10575
+ #define V8_DEFAULT_STACK_SIZE_KB 864
+ #elif V8_TARGET_ARCH_IA32
+ // In mid-2022, we're observing an increase in stack overflow crashes on
+diff --git a/src/execution/stack-guard.cc b/src/execution/stack-guard.cc
+index 4bfd56d287bd..9fee5490b51b 100644
+--- a/src/execution/stack-guard.cc
++++ b/src/execution/stack-guard.cc
+@@ -238,8 +238,8 @@ void StackGuard::FreeThreadResources() {
+ void StackGuard::ThreadLocal::Initialize(Isolate* isolate,
+                                          const ExecutionAccess& lock) {
+   const uintptr_t kLimitSize = v8_flags.stack_size * KB;
+-  DCHECK_GT(GetCurrentStackPosition(), kLimitSize);
+-  uintptr_t limit = GetCurrentStackPosition() - kLimitSize;
++  DCHECK_GT(base::Stack::GetStackStart(), kLimitSize);
++  uintptr_t limit = base::Stack::GetStackStart() - kLimitSize;
+   real_jslimit_ = SimulatorStack::JsLimitFromCLimit(isolate, limit);
+   set_jslimit(SimulatorStack::JsLimitFromCLimit(isolate, limit));
+ #ifdef USE_SIMULATOR
