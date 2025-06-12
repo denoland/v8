@@ -1,7 +1,8 @@
-
 // Copyright 2024 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+
+#if !V8_SAFE_STRING_HASHER
 
 #include "src/strings/string-hasher.h"
 
@@ -76,3 +77,5 @@ uint64_t HashConvertingTo8Bit(const uint16_t* chars, uint32_t length,
 }  // namespace detail
 
 }  // namespace v8::internal
+
+#endif  // !V8_SAFE_STRING_HASHER

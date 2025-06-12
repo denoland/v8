@@ -24,7 +24,10 @@
 #include "src/objects/string-inl.h"
 #include "src/strings/char-predicates-inl.h"
 #include "src/utils/utils-inl.h"
+
+#if !V8_SAFE_STRING_HASHER
 #include "third_party/rapidhash-v8/rapidhash.h"
+#endif
 
 namespace v8 {
 namespace internal {
@@ -40,6 +43,8 @@ uint32_t ConvertRawHashToUsableHash(T raw_hash) {
   // Ensure that the hash is kZeroHash, if the computed value is 0.
   return hash == 0 ? StringHasher::kZeroHash : hash;
 }
+
+#if !V8_SAFE_STRING_HASHER
 
 V8_INLINE bool IsOnly8Bit(const uint16_t* chars, unsigned len) {
   // TODO(leszeks): This could be SIMD for efficiency on large strings, if we
@@ -72,6 +77,9 @@ V8_INLINE uint32_t GetUsableRapidHash(const uchar* chars, uint32_t length,
                                       uint64_t seed) {
   return ConvertRawHashToUsableHash(GetRapidHash(chars, length, seed));
 }
+
+#endif  // !V8_SAFE_STRING_HASHER
+
 }  // namespace detail
 
 void RunningStringHasher::AddCharacter(uint16_t c) {
@@ -219,6 +227,126 @@ static_assert(String::kMaxArrayIndexSize == String::kMaxIntegerIndexSize);
 
 }  // namespace detail
 
+#if V8_SAFE_STRING_HASHER
+template <typename char_t>
+uint32_t StringHasher::HashSequentialString(const char_t* chars_raw,
+                                            uint32_t length, uint64_t seed) {
+  static_assert(std::is_integral_v<char_t>);
+  static_assert(sizeof(char_t) <= 2);
+  using uchar = std::make_unsigned_t<char_t>;
+  const uchar* chars = reinterpret_cast<const uchar*>(chars_raw);
+  DCHECK_IMPLIES(length > 0, chars != nullptr);
+  if (length >= 1) {
+    if (length <= String::kMaxIntegerIndexSize && IsDecimalDigit(chars[0]) &&
+        (length == 1 || chars[0] != '0')) {
+      uint32_t index = chars[0] - '0';
+      uint32_t i = 1;
+      if (length <= String::kMaxArrayIndexSize) {
+        // Possible array index; try to compute the array index hash.
+        static_assert(String::kMaxArrayIndexSize <=
+                      String::kMaxIntegerIndexSize);
+
+        // We can safely add digits until `String::kMaxArrayIndexSize - 1`
+        // without needing an overflow check -- if the whole string is
+        // smaller than this, we can skip the overflow check entirely.
+        bool needs_overflow_check = length == String::kMaxArrayIndexSize;
+
+        uint32_t safe_length = needs_overflow_check ? length - 1 : length;
+        for (; i < safe_length; i++) {
+          char_t c = chars[i];
+          if (!IsDecimalDigit(c)) {
+            // If there is a non-decimal digit, we can skip doing anything
+            // else and emit a non-index hash.
+            goto non_index_hash;
+          }
+          index = (10 * index) + (c - '0');
+        }
+        DCHECK_EQ(i, safe_length);
+        // If we didn't need to check for an overflowing value, we're
+        // done.
+        if (!needs_overflow_check) {
+          DCHECK_EQ(i, length);
+          return MakeArrayIndexHash(index, length);
+        }
+        // Otherwise, the last character needs to be checked for both being
+        // digit, and the result being in bounds of the maximum array index.
+        DCHECK_EQ(i, length - 1);
+        char_t c = chars[i];
+        if (!IsDecimalDigit(c)) {
+          // If there is a non-decimal digit, we can skip doing anything
+          // else and emit a non-index hash.
+          goto non_index_hash;
+        }
+        if (TryAddArrayIndexChar(&index, c)) {
+          return MakeArrayIndexHash(index, length);
+        }
+        // If the range check fails, this falls through into the integer index
+        // check.
+      }
+
+      // The following block wouldn't do anything on 32-bit platforms,
+      // because kMaxArrayIndexSize == kMaxIntegerIndexSize there, and
+      // if we wanted to compile it everywhere, then {index_big} would
+      // have to be a {size_t}, which the Mac compiler doesn't like to
+      // implicitly cast to uint64_t for the {TryAddIndexChar} call.
+#if V8_HOST_ARCH_64_BIT
+      // No "else" here: if the block above was entered and fell through,
+      // we have something that's not an array index but might still have
+      // been all digits and therefore a valid in-range integer index.
+      // Perform a regular hash computation, and additionally check if
+      // there are non-digit characters.
+      String::HashFieldType type = String::HashFieldType::kIntegerIndex;
+      uint64_t index_big = index;
+      RunningStringHasher hasher(static_cast<uint32_t>(seed));
+      for (uint32_t j = 0; j < i; j++) {
+        hasher.AddCharacter(chars[j]);
+      }
+      for (; i < length; i++) {
+        char_t c = chars[i];
+        hasher.AddCharacter(c);
+        // TODO(leszeks): Split this into a safe length iteration.
+        if (!IsDecimalDigit(c) || !TryAddIntegerIndexChar(&index_big, c)) {
+          for (i = i + 1; i < length; i++) {
+            hasher.AddCharacter(chars[i]);
+          }
+          type = String::HashFieldType::kHash;
+          break;
+        }
+      }
+      DCHECK_EQ(i, length);
+      uint32_t hash = String::CreateHashFieldValue(hasher.Finalize(), type);
+      if (Name::ContainsCachedArrayIndex(hash)) {
+        DCHECK_EQ(type, String::HashFieldType::kIntegerIndex);
+        // The hash accidentally looks like a cached index. Fix that by
+        // setting a bit that looks like a longer-than-cacheable string
+        // length.
+        hash |= (String::kMaxCachedArrayIndexLength + 1)
+                << String::ArrayIndexLengthBits::kShift;
+      }
+      DCHECK(!Name::ContainsCachedArrayIndex(hash));
+      return hash;
+#endif  // V8_HOST_ARCH_64_BIT
+    } else if (length > String::kMaxHashCalcLength) {
+      // We should never go down this path if we might have an index value.
+      static_assert(String::kMaxHashCalcLength > String::kMaxIntegerIndexSize);
+      static_assert(String::kMaxHashCalcLength > String::kMaxArrayIndexSize);
+      return GetTrivialHash(length);
+    }
+  }
+
+non_index_hash:
+  // Non-index hash.
+  RunningStringHasher hasher(static_cast<uint32_t>(seed));
+  const uchar* end = &chars[length];
+  while (chars != end) {
+    hasher.AddCharacter(*chars++);
+  }
+  return String::CreateHashFieldValue(hasher.Finalize(),
+                                      String::HashFieldType::kHash);
+}
+
+#else  // V8_SAFE_STRING_HASHER
+
 template <typename char_t>
 uint32_t StringHasher::HashSequentialString(const char_t* chars_raw,
                                             uint32_t length, uint64_t seed) {
@@ -270,7 +398,7 @@ uint32_t StringHasher::HashSequentialString(const char_t* chars_raw,
 #else
           static_assert(String::kMaxArrayIndexSize ==
                         String::kMaxIntegerIndexSize);
-#endif
+#endif  // V8_HOST_ARCH_64_BIT
           break;
         }
       }
@@ -289,6 +417,8 @@ uint32_t StringHasher::HashSequentialString(const char_t* chars_raw,
       detail::GetUsableRapidHash(chars, length, seed),
       String::HashFieldType::kHash);
 }
+
+#endif  // V8_SAFE_STRING_HASHER
 
 std::size_t SeededStringHasher::operator()(const char* name) const {
   return StringHasher::HashSequentialString(
