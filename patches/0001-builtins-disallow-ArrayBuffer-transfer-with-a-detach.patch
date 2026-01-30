@@ -1,0 +1,131 @@
+From c5ff7c4d6cdea06d0319609875c41eaa77b70db0 Mon Sep 17 00:00:00 2001
+From: Chengzhong Wu <cwu631@bloomberg.net>
+Date: Tue, 13 Jan 2026 11:25:43 -0500
+Subject: [PATCH] [builtins] disallow ArrayBuffer transfer with a detach key
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This allows embedder to disallow `ArrayBuffer.prototype.transfer()` on
+an arraybuffer that is not detachable. This also fix the check on
+`ArrayBufferCopyAndDetach` step 8 of `ArrayBuffer.prototype.transfer`.
+
+Refs: https://github.com/nodejs/node/issues/61362
+Refs: https://tc39.es/ecma262/#sec-arraybuffercopyanddetach
+Change-Id: I3c6e156a8fad007fd100218d8b16aed5c4e1db68
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/7454288
+Commit-Queue: Chengzhong Wu <cwu631@bloomberg.net>
+Reviewed-by: Olivier Flückiger <olivf@chromium.org>
+Cr-Commit-Position: refs/heads/main@{#104697}
+---
+ src/builtins/builtins-arraybuffer.cc          |  3 +-
+ .../array-buffer-transfer-detach-key.js       | 22 ++++++++++
+ test/unittests/BUILD.gn                       |  1 +
+ .../unittests/api/v8-array-buffer-unittest.cc | 40 +++++++++++++++++++
+ 4 files changed, 65 insertions(+), 1 deletion(-)
+ create mode 100644 test/mjsunit/array-buffer-transfer-detach-key.js
+ create mode 100644 test/unittests/api/v8-array-buffer-unittest.cc
+
+diff --git a/src/builtins/builtins-arraybuffer.cc b/src/builtins/builtins-arraybuffer.cc
+index b0495c8c28b..198e76ae46e 100644
+--- a/src/builtins/builtins-arraybuffer.cc
++++ b/src/builtins/builtins-arraybuffer.cc
+@@ -715,7 +715,8 @@ Tagged<Object> ArrayBufferTransfer(Isolate* isolate,
+   // 8. If arrayBuffer.[[ArrayBufferDetachKey]] is not undefined, throw a
+   //     TypeError exception.
+ 
+-  if (!array_buffer->is_detachable()) {
++  if (!IsUndefined(array_buffer->detach_key()) ||
++      !array_buffer->is_detachable()) {
+     THROW_NEW_ERROR_RETURN_FAILURE(
+         isolate,
+         NewTypeError(MessageTemplate::kDataCloneErrorNonDetachableArrayBuffer));
+diff --git a/test/mjsunit/array-buffer-transfer-detach-key.js b/test/mjsunit/array-buffer-transfer-detach-key.js
+new file mode 100644
+index 00000000000..3c262fa8843
+--- /dev/null
++++ b/test/mjsunit/array-buffer-transfer-detach-key.js
+@@ -0,0 +1,22 @@
++// Copyright 2026 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++//
++// Flags: --allow-natives-syntax
++
++function TestTransferSucceeds() {
++  const ab = new ArrayBuffer(100);
++  %ArrayBufferSetDetachKey(ab, undefined);
++  ab.transfer();
++  assertEquals(0, ab.byteLength);  // Detached.
++}
++
++function TestTransferFails() {
++  const ab = new ArrayBuffer(100);
++  %ArrayBufferSetDetachKey(ab, Symbol());
++  assertThrows(() => { ab.transfer(); }, TypeError);
++  assertEquals(100, ab.byteLength);  // Not detached.
++}
++
++TestTransferSucceeds();
++TestTransferFails();
+diff --git a/test/unittests/BUILD.gn b/test/unittests/BUILD.gn
+index 3ff6c69fbfb..a107a5945b4 100644
+--- a/test/unittests/BUILD.gn
++++ b/test/unittests/BUILD.gn
+@@ -263,6 +263,7 @@ v8_source_set("v8_unittests_sources") {
+     "api/remote-object-unittest.cc",
+     "api/resource-constraints-unittest.cc",
+     "api/smi-tagging-unittest.cc",
++    "api/v8-array-buffer-unittest.cc",
+     "api/v8-array-unittest.cc",
+     "api/v8-maybe-unittest.cc",
+     "api/v8-memory-span-unittest.cc",
+diff --git a/test/unittests/api/v8-array-buffer-unittest.cc b/test/unittests/api/v8-array-buffer-unittest.cc
+new file mode 100644
+index 00000000000..4aaec1617f6
+--- /dev/null
++++ b/test/unittests/api/v8-array-buffer-unittest.cc
+@@ -0,0 +1,40 @@
++// Copyright 2026 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "include/v8-array-buffer.h"
++
++#include "test/unittests/test-utils.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace v8 {
++namespace {
++
++using ArrayBufferTest = TestWithContext;
++
++TEST_F(ArrayBufferTest, TransferWithDetachKey) {
++  Local<ArrayBuffer> ab = ArrayBuffer::New(isolate(), 1);
++  Local<Value> key = Symbol::New(isolate());
++  ab->SetDetachKey(key);
++  Local<Object> global = context()->Global();
++  Local<String> property_name =
++      String::NewFromUtf8Literal(isolate(), "test_ab");
++  global->Set(context(), property_name, ab).ToChecked();
++
++  {
++    TryCatch try_catch(isolate());
++    CHECK(TryRunJS("globalThis.test_ab.transfer()").IsEmpty());
++  }
++
++  // Didnot transfer.
++  EXPECT_EQ(ab->ByteLength(), 1u);
++
++  ab->SetDetachKey(Undefined(isolate()));
++  RunJS("globalThis.test_ab.transfer()");
++
++  // Transferred.
++  EXPECT_EQ(ab->ByteLength(), 0u);
++}
++
++}  // namespace
++}  // namespace v8
+-- 
+2.52.0
+
