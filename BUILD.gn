@@ -918,6 +918,14 @@ config("internal_config") {
     defines += [ "BUILDING_V8_SHARED" ]
   }
 
+  # When the resulting V8 archive will be linked into a shared library
+  # downstream (e.g. a cdylib), thread-locals defined in V8 internal sources
+  # must use a TLS model compatible with -fPIC (not "local-exec"). This
+  # define switches them via src/common/thread-local-storage.h.
+  if (v8_monolithic_for_shared_library) {
+    defines += [ "V8_TLS_USED_IN_LIBRARY" ]
+  }
+
   if (v8_current_cpu == "riscv64" || v8_current_cpu == "riscv32") {
     if (!is_clang) {
       libs = [ "atomic" ]
@@ -1252,7 +1260,7 @@ config("features") {
     defines += [ "CPPGC_ALLOW_ALLOCATIONS_IN_PREFINALIZERS" ]
   }
 
-  if (v8_monolithic && v8_monolithic_for_shared_library) {
+  if (v8_monolithic_for_shared_library) {
     defines += [ "V8_TLS_USED_IN_LIBRARY" ]
   }
 
