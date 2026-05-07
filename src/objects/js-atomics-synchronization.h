@@ -116,6 +116,9 @@ V8_OBJECT class JSSynchronizationPrimitive : public AlwaysSharedSpaceJSObject {
  public:
   ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;
   std::atomic<uint32_t> state_;
+#if TAGGED_SIZE_8_BYTES
+  uint32_t optional_padding_;
+#endif  // TAGGED_SIZE_8_BYTES
 } V8_OBJECT_END;
 
 inline constexpr int JSSynchronizationPrimitive::kWaiterQueueHeadOffset =
@@ -296,6 +299,9 @@ V8_OBJECT class JSAtomicsMutex : public JSSynchronizationPrimitive {
 
  public:
   std::atomic<int32_t> owner_thread_id_;
+#if TAGGED_SIZE_8_BYTES
+  uint32_t optional_padding_2_;
+#endif  // TAGGED_SIZE_8_BYTES
 
   // Defined out-of-line below the class so `offsetof` / `sizeof` on the
   // still-incomplete type can appear in an initializer.
@@ -374,10 +380,6 @@ V8_OBJECT class JSAtomicsCondition : public JSSynchronizationPrimitive {
                                   const DequeueAction& dequeue_action);
 
  public:
-#if TAGGED_SIZE_8_BYTES
-  uint32_t optional_padding_;
-#endif  // TAGGED_SIZE_8_BYTES
-
   static const int kHeaderSize;
 } V8_OBJECT_END;
 
