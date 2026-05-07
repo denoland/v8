@@ -112,6 +112,9 @@ V8_OBJECT class JSSynchronizationPrimitive : public AlwaysSharedSpaceJSObject {
  public:
   ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;
   std::atomic<uint32_t> state_;
+#if TAGGED_SIZE_8_BYTES
+  uint32_t optional_padding_;
+#endif  // TAGGED_SIZE_8_BYTES
 } V8_OBJECT_END;
 
 // Synchronization primitives only store raw data past JSObject; no tagged
@@ -288,6 +291,9 @@ V8_OBJECT class JSAtomicsMutex : public JSSynchronizationPrimitive {
 
  public:
   std::atomic<int32_t> owner_thread_id_;
+#if TAGGED_SIZE_8_BYTES
+  uint32_t optional_padding_2_;
+#endif  // TAGGED_SIZE_8_BYTES
 
   static const int kHeaderSize;
 } V8_OBJECT_END;
@@ -361,10 +367,6 @@ V8_OBJECT class JSAtomicsCondition : public JSSynchronizationPrimitive {
                                   const DequeueAction& dequeue_action);
 
  public:
-#if TAGGED_SIZE_8_BYTES
-  uint32_t optional_padding_;
-#endif  // TAGGED_SIZE_8_BYTES
-
   static const int kHeaderSize;
 } V8_OBJECT_END;
 
