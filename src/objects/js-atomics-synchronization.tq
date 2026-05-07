@@ -7,14 +7,15 @@
 extern class JSSynchronizationPrimitive extends AlwaysSharedSpaceJSObject {
   waiter_queue_head: ExternalPointer;
   state: uint32;
+  @if(TAGGED_SIZE_8_BYTES) optional_padding: uint32;
 }
 
 @cppObjectLayoutDefinition
 extern class JSAtomicsMutex extends JSSynchronizationPrimitive {
   owner_thread_id: int32;
+  @if(TAGGED_SIZE_8_BYTES) optional_padding_2: uint32;
 }
 
 @cppObjectLayoutDefinition
 extern class JSAtomicsCondition extends JSSynchronizationPrimitive {
-  @if(TAGGED_SIZE_8_BYTES) optional_padding: uint32;
 }
