@@ -42,12 +42,29 @@ holds both pieces of data atomically:
 
 The new tag `kCFunctionWithSignatureTag` is in `MANAGED_TAG_LIST`, i.e.
 inside the managed-resource range that `IsManagedExternalPointerType`
-returns true for. The motivation for the consolidation was atomicity:
-upstream commit f5ac1a82 ([fastapi] Read c-function and signature atomically,
-crbug 492077213) notes that loading the c-function and the signature
-separately allowed a raceful FixedArray mutation to produce a mismatched
-(function, signature) pair, and the new single-`Managed` shape closes that
-gap.
+returns true for.
+
+The motivation for the consolidation chain is atomicity. The introductory
+CL [crrev.com/c/7668829] ("[fastapi] Store callback and signature in one
+C++ object", merged 2026-03-25 into V8 main, ~14.8) replaces the
+`[address, signature]` `FixedArray` pair with a single
+`Managed<CFunctionWithSignature>` per overload. Its follow-up
+[crrev.com/c/7715581] ("[wasm] Read c-function and signature atomically",
+2026-04-01) and [crrev.com/c/7705870 / f5ac1a82] ("[fastapi] Read
+c-function and signature atomically", `crbug.com/492077213`, 2026-03-27)
+remove the now-redundant separate loads: a concurrent mutation of the
+`FixedArray` could previously hand the JIT a `(function, signature)` pair
+where the signature came from a different overload. The new single-pointer
+load closes that gap. Two later CLs polished the shape:
+[crrev.com/c/7721359] ("Use uint32_t for overload count/index",
+2026-04-02) and [crrev.com/c/7725983] ("Use no_gc variants of Managed ptr
+getters", 2026-04-02).
+
+[crrev.com/c/7668829]: https://chromium-review.googlesource.com/c/v8/v8/+/7668829
+[crrev.com/c/7715581]: https://chromium-review.googlesource.com/c/v8/v8/+/7715581
+[crrev.com/c/7705870 / f5ac1a82]: https://chromium-review.googlesource.com/c/v8/v8/+/7708355
+[crrev.com/c/7721359]: https://chromium-review.googlesource.com/c/v8/v8/+/7721359
+[crrev.com/c/7725983]: https://chromium-review.googlesource.com/c/v8/v8/+/7725983
 
 ## Why this breaks startup snapshot serialization
 
@@ -96,47 +113,134 @@ In 14.7 the same code path encoded two non-managed Foreigns whose addresses
 the embedder could (and Deno did, in `OpCtx::external_references()`)
 register via `ExternalReferences`. That path no longer exists.
 
-## Why a `denoland/v8` patch is not appropriate
+## Upstream has already landed a fix for this
 
-The repo's stated charter ([`README.md`]) is that floated patches should
-"help accommodate build system differences between Chromium and rusty_v8"
-and avoid functional changes to V8 internals. The functional patches we do
-carry (`Apple Silicon mprotect`, `Windows ptrcmp padding`,
-`V8_TLS_USED_IN_LIBRARY`) all target host-specific build/runtime invariants
-that V8 upstream does not — and likely will not — accept as merge-able
-changes; none of them alter snapshot, GC, or sandboxing internals.
+While drafting this note we found that V8 main has already reversed the
+serialization regression — Node.js hit the same issue and pushed the fix
+upstream. The sequence is:
 
-A V8 patch that would actually preserve fast-call data in a Deno snapshot
-would have to either:
+- [crrev.com/c/7814117] — Joyee Cheung (Igalia / Node.js), 2026-05-04,
+  *"[fastapi] Keep paired-Foreign overload layout in non-sandbox builds"*.
+  Adds a non-sandbox compile-time fork so non-Chrome embedders keep the
+  serializable (`kCFunctionTag`, `kCFunctionInfoTag`) pair. **Abandoned**
+  2026-05-12 — Andreas Haas (V8 fastapi owner) preferred a single
+  cross-configuration shape and superseded it with the next CL.
+- [crrev.com/c/7828135] — Andreas Haas, **merged 2026-05-12**,
+  `refs/heads/main@{#107265}`, *"[fastapi] Store v8::CFunction pointer
+  directly in FunctionTemplateInfo"*.
+
+The merged CL is exactly the shape we'd want as a backport:
+
+- `CFunctionWithSignatureTag` is removed from `MANAGED_TAG_LIST`.
+- A new non-managed `CFunctionTag` is added to `FOREIGN_TAG_LIST`.
+- `FunctionTemplate::SetCallHandler` now stores each `v8::CFunction*` as
+  a plain `Foreign<kCFunctionTag>` instead of allocating a
+  `Managed<CFunctionWithSignature>`:
+
+      i::DirectHandle<i::Foreign> overload =
+          i_isolate->factory()->NewForeign<i::kCFunctionTag>(
+              reinterpret_cast<i::Address>(c_function));
+
+- `compiler/heap-refs.cc` reads back via `Foreign::foreign_address<kCFunctionTag>`
+  and calls `CFunction::GetAddress()` / `GetTypeInfo()` on the pointer.
+
+The CL commit message states the new invariant the embedder owes V8:
+
+> This change relies on the assumption that the CFunction object passed to
+> FunctionTemplate::New outlives the FunctionTemplate itself. In practice,
+> all embedders — including Chrome — already ensure this by holding the
+> CFunction object in a static variable.
+
+The companion change to `src/d8/d8-test.cc` adds `static` to every test
+`CFunction` declaration, illustrating what the embedder contract looks
+like in practice.
+
+Net effect for Deno: once a V8 branch carrying this CL rolls into this
+patch repo (it lands on `main@{#107265}`, post-14.9 branch cut, so it will
+arrive with V8 15.0), `FunctionTemplateInfo` becomes serializable again
+without a Deno-side workaround. `op_ctx_template`'s `will_snapshot` branch
+and `upgrade_snapshotted_ops_with_fast_calls` can be deleted in
+`deno_core`.
+
+[crrev.com/c/7814117]: https://chromium-review.googlesource.com/c/v8/v8/+/7814117
+[crrev.com/c/7828135]: https://chromium-review.googlesource.com/c/v8/v8/+/7828135
+
+## Why we are not backporting [crrev.com/c/7828135] today
+
+The fix is small (78 / 79 lines, 7 files) and contained, but adopting it
+on the 14.9-lkgr-denoland branch isn't a no-op. Three things have to be
+true at the same time for the patch to be safe:
+
+1. **rusty_v8 lifetime contract.** The new V8 API requires the
+   `v8::CFunction` passed to `FunctionTemplate::NewWithCFunctionOverloads`
+   to outlive the returned `FunctionTemplate`. rusty_v8's
+   `FunctionTemplateBuilder::build_fast(scope, overloads: &[CFunction])`
+   currently takes a borrow and forwards `overloads.as_ptr()` to
+   `v8__FunctionTemplate__New` (see
+   [rusty_v8/src/template.rs](https://github.com/denoland/rusty_v8/blob/main/src/template.rs)
+   and the corresponding C++ shim in
+   [rusty_v8/src/binding.cc](https://github.com/denoland/rusty_v8/blob/main/src/binding.cc)).
+   Callers that pass a stack-local slice — `builder.build_fast(scope, &[fast_function])`,
+   which is what `deno_core`'s `op_ctx_template` already does — would,
+   under the new V8 ABI, hand V8 a pointer that becomes dangling the moment
+   `build_fast` returns. rusty_v8 needs an internal copy/leak (e.g. into
+   an isolate-scoped arena) or a `'static`-bounded overload signature.
+2. **deno_core CFunction storage.** `libs/ops/op2/dispatch_fast.rs` emits
+   `CFunction::new(Self::#fast_function as _, &CFunctionInfo::new(...))`
+   at codegen time. The resulting `CFunction` is stored in the
+   `OpDecl::fast_fn` field of a `const`/`static` declaration, so on the
+   Rust side the underlying bytes have static lifetime; but it gets
+   copied through `op_ctx.decl.fast_fn` and into the stack-local slice at
+   the `build_fast` call site, which is the layer that needs the audit
+   above. The `CFunctionInfo` reference inside it must also be `'static`
+   for the new V8 API to be sound.
+3. **14.9-lkgr-denoland is shared.** This branch is consumed by
+   `rusty_v8` releases and downstream binaries. Carrying a behavioral
+   patch that flips the layout of `FunctionTemplateInfo` overloads on a
+   stable branch — without (1) and (2) in place — risks breaking
+   embedders that picked up the same rusty_v8 release.
+
+If we want to pull the fix in early, the cheapest path is on V8 15.x as a
+fresh `15.0-lkgr-denoland` (post-roll) rather than on 14.9, paired with a
+rusty_v8 release that has switched `build_fast` to a static-lifetime
+overload list. Until then the Deno embedder workaround already shipping
+in [denoland/deno#34226] is the right thing to keep.
+
+## Why a V8-side patch alternative to [crrev.com/c/7828135] is unattractive
+
+For completeness, the patches that were considered before the upstream
+fix surfaced:
 
 1. teach the snapshotter to decompose a `Managed<CFunctionWithSignature>`
    back into its `(function_address, type_info_pointer)` pair, serialize
    each via the external reference table, and re-allocate a fresh
    `Managed` on the deserialization side; or
 2. add a sanitize-and-restore pass on every `FunctionTemplateInfo` (and
-   `FunctionTemplateRareData::c_function_overloads`) so the serializer sees
-   an empty overloads array, symmetric to the existing
+   `FunctionTemplateRareData::c_function_overloads`) so the serializer
+   sees an empty overloads array, symmetric to the existing
    `SanitizeIsolateScope` / `RemoveCallbackRedirectionForSerialization`
    pattern.
 
-(1) is a non-trivial behavioral change to V8's sandbox-aware serializer for
-a managed-resource type whose lifetime semantics V8 considers private — it
-is precisely what the deserializer comment above is warning off. (2) is
+(1) is a non-trivial behavioral change to V8's sandbox-aware serializer
+for a managed-resource type whose lifetime semantics V8 considers private
+— it is precisely what the deserializer comment above warns off. (2) is
 mostly identical in effect to the Deno-side workaround already shipping;
 the embedder must still rebuild fast calls after deserialization, since
 neither the function address nor the `CFunctionInfo` pointer survives a
 process boundary. Pushing (2) down into V8 would let Deno drop the
 `will_snapshot` plumbing but would not remove
 `upgrade_snapshotted_ops_with_fast_calls`, and would add Deno-shaped
-machinery to V8 core that no other embedder asks for.
+machinery to V8 core that no other embedder asks for. Both options are
+strictly worse than [crrev.com/c/7828135], which is already in V8 main.
 
-The cost of *not* patching V8 — keeping the workaround in `deno_core` —
-is small (see "Startup impact" below) and the workaround is the right
-shape: the snapshot bakes the slow function for every op, and the runtime
-re-attaches fast paths immediately after deserialization, before any user
-JS runs.
+The cost of *not* patching V8 today — keeping the workaround in
+`deno_core` — is small (see "Startup impact" below) and the workaround
+is the right shape: the snapshot bakes the slow function for every op,
+and the runtime re-attaches fast paths immediately after deserialization,
+before any user JS runs.
 
 [`README.md`]: ../README.md
+[denoland/deno#34226]: https://github.com/denoland/deno/pull/34226
 
 ## Startup impact estimate
 
@@ -221,10 +325,23 @@ repo.
 
 ## Decision
 
-No `denoland/v8` patch. The upstream consolidation into
-`Managed<CFunctionWithSignature>` is intentional (fixes a real race), and
-the snapshotter's refusal to encode managed external pointers is a
-sandbox-correctness invariant we should not unilaterally relax. The Deno
-embedder-side workaround is the right shape; the only remaining work is to
-make its post-deserialization upgrade pass invariant-strict rather than
-best-effort.
+No `denoland/v8` patch on the 14.9 branch. The upstream consolidation into
+`Managed<CFunctionWithSignature>` was intentional (it fixed a real
+`(function, signature)` load race, `crbug.com/492077213`), and the
+snapshotter's refusal to encode managed external pointers is a
+sandbox-correctness invariant we should not unilaterally relax.
+
+The Deno embedder-side workaround in [denoland/deno#34226] is the right
+shape for V8 14.9. The follow-up work falls in two places:
+
+- **`deno_core`**: harden the silent fallbacks in
+  `upgrade_snapshotted_ops_with_fast_calls`. Three `continue`-on-`None`
+  paths and one `let _ = …call(…)` should become hard errors for a
+  Deno-built snapshot.
+- **`denoland/v8` next roll**: when V8 15.x rolls in,
+  [crrev.com/c/7828135] removes the `Managed` wrapping and restores
+  `FunctionTemplateInfo` serialization. At that point the embedder-side
+  workaround can be deleted in `deno_core`, conditional on `rusty_v8`
+  having first switched its `build_fast` overload-list signature to one
+  that satisfies the new V8 lifetime invariant (the C++-side `v8::CFunction`
+  must outlive the resulting `FunctionTemplate`).
