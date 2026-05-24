@@ -1,0 +1,125 @@
+From bc5bb9819f596a009a993401a1e1c0f9b2439976 Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <me@littledivy.com>
+Date: Sun, 24 May 2026 19:02:43 +0000
+Subject: [PATCH] snapshot: cut per-iteration overhead in deserializer hot
+ paths
+
+Two small changes to the snapshot deserializer that together meaningfully
+reduce SnapshotDeserialization wall-time on large payloads such as code
+caches produced by the TypeScript compiler.
+
+1. snapshot-source-sink.h: rewrite SnapshotByteSource::CopySlots so the
+   source pointer and write count are derived once before the loop and
+   the SnapshotByteSource::position_ member is updated exactly once at
+   the end. Previously the loop read `data_ + position_` and bumped
+   `position_` on every iteration; because `position_` is a member
+   variable the compiler could not always prove no-alias with the
+   destination slot pointer and reloaded it each iteration, defeating
+   instruction-level parallelism in the inner copy. The semantics of
+   the per-slot Relaxed_Store (needed for concurrent marker visibility)
+   are preserved.
+
+2. deserializer.cc: derive the initial reservation for back_refs_ from
+   the payload size instead of using a hard-coded 2048. The serializer
+   emits one back-reference for every allocated object, so large
+   snapshots (code caches in the multi-megabyte range produced by the
+   TypeScript compiler) caused several geometric std::vector
+   reallocations during deserialization. The hint is clamped on both
+   ends so small snapshots are unaffected and we cannot pre-allocate
+   pathologically large vectors.
+
+Both changes are local to deserialization fast paths and do not change
+the snapshot wire format.
+
+Signed-off-by: Divy Srivastava <me@littledivy.com>
+---
+ src/snapshot/deserializer.cc        | 18 +++++++++++++++++-
+ src/snapshot/snapshot-source-sink.h | 26 ++++++++++++++++----------
+ 2 files changed, 33 insertions(+), 11 deletions(-)
+
+diff --git a/src/snapshot/deserializer.cc b/src/snapshot/deserializer.cc
+index ff6403f4..5bdbefb1 100644
+--- a/src/snapshot/deserializer.cc
++++ b/src/snapshot/deserializer.cc
+@@ -6,6 +6,8 @@
+ 
+ #include <inttypes.h>
+ 
++#include <algorithm>
++
+ #include "src/base/logging.h"
+ #include "src/codegen/assembler-inl.h"
+ #include "src/codegen/reloc-info-inl.h"
+@@ -346,7 +348,21 @@ Deserializer<IsolateT>::Deserializer(IsolateT* isolate,
+   static_assert(kEmptyBackingStoreRefSentinel == 0);
+   backing_stores_.push_back({});
+ 
+-  back_refs_.reserve(2048);
++  // Pre-size the back-reference vector. The serializer emits one back-ref
++  // entry for every allocated object, so for large payloads (e.g. user code
++  // caches produced by the TypeScript compiler) the default 2048-entry
++  // reservation triggers multiple geometric reallocations during
++  // deserialization. Use a payload-size hint to skip that. The constant
++  // (~24 bytes per object) is an empirical lower-bound across V8's startup,
++  // context and user-code snapshots; we still bound the reservation so we
++  // don't pre-allocate megabytes for pathologically tiny snapshots.
++  static constexpr size_t kEstimatedBytesPerObject = 24;
++  static constexpr size_t kMinBackRefReservation = 2048;
++  static constexpr size_t kMaxBackRefReservation = 1 << 17;  // 128k entries.
++  const size_t back_ref_hint = std::clamp<size_t>(
++      payload.size() / kEstimatedBytesPerObject, kMinBackRefReservation,
++      kMaxBackRefReservation);
++  back_refs_.reserve(back_ref_hint);
+   js_dispatch_entries_.reserve(512);
+ 
+ #ifdef DEBUG
+diff --git a/src/snapshot/snapshot-source-sink.h b/src/snapshot/snapshot-source-sink.h
+index f915e1df..1a712de5 100644
+--- a/src/snapshot/snapshot-source-sink.h
++++ b/src/snapshot/snapshot-source-sink.h
+@@ -57,26 +57,32 @@ class SnapshotByteSource final {
+   }
+ 
+   void CopySlots(Address* dest, int number_of_slots) {
++    // Hoist `position_` and `data_` out of the inner loop so the compiler
++    // doesn't have to assume they alias with `dest` and reload them each
++    // iteration. Each tagged slot is still stored with Relaxed_Store so the
++    // concurrent marker continues to see word-atomic writes.
++    const uint8_t* src = data_ + position_;
+     base::AtomicWord* start = reinterpret_cast<base::AtomicWord*>(dest);
+-    base::AtomicWord* end = start + number_of_slots;
+-    for (base::AtomicWord* p = start; p < end;
+-         ++p, position_ += sizeof(base::AtomicWord)) {
++    for (int i = 0; i < number_of_slots; ++i) {
+       base::AtomicWord val;
+-      memcpy(&val, data_ + position_, sizeof(base::AtomicWord));
+-      base::Relaxed_Store(p, val);
++      memcpy(&val, src + i * sizeof(base::AtomicWord),
++             sizeof(base::AtomicWord));
++      base::Relaxed_Store(start + i, val);
+     }
++    position_ += number_of_slots * sizeof(base::AtomicWord);
+   }
+ 
+ #ifdef V8_COMPRESS_POINTERS
+   void CopySlots(Tagged_t* dest, int number_of_slots) {
++    const uint8_t* src = data_ + position_;
+     AtomicTagged_t* start = reinterpret_cast<AtomicTagged_t*>(dest);
+-    AtomicTagged_t* end = start + number_of_slots;
+-    for (AtomicTagged_t* p = start; p < end;
+-         ++p, position_ += sizeof(AtomicTagged_t)) {
++    for (int i = 0; i < number_of_slots; ++i) {
+       AtomicTagged_t val;
+-      memcpy(&val, data_ + position_, sizeof(AtomicTagged_t));
+-      base::Relaxed_Store(p, val);
++      memcpy(&val, src + i * sizeof(AtomicTagged_t),
++             sizeof(AtomicTagged_t));
++      base::Relaxed_Store(start + i, val);
+     }
++    position_ += number_of_slots * sizeof(AtomicTagged_t);
+   }
+ #endif
+ 
+-- 
+2.43.0
+
