@@ -1,12 +1,12 @@
-From bc5bb9819f596a009a993401a1e1c0f9b2439976 Mon Sep 17 00:00:00 2001
+From b4834ae7dd43430bdde5deaebd04df321154b977 Mon Sep 17 00:00:00 2001
 From: Divy Srivastava <me@littledivy.com>
 Date: Sun, 24 May 2026 19:02:43 +0000
 Subject: [PATCH] snapshot: cut per-iteration overhead in deserializer hot
  paths
 
-Two small changes to the snapshot deserializer that together meaningfully
-reduce SnapshotDeserialization wall-time on large payloads such as code
-caches produced by the TypeScript compiler.
+Three small changes to the snapshot deserializer that together
+meaningfully reduce SnapshotDeserialization wall-time on large payloads
+such as code caches produced by the TypeScript compiler.
 
 1. snapshot-source-sink.h: rewrite SnapshotByteSource::CopySlots so the
    source pointer and write count are derived once before the loop and
@@ -28,17 +28,25 @@ caches produced by the TypeScript compiler.
    ends so small snapshots are unaffected and we cannot pre-allocate
    pathologically large vectors.
 
+3. deserializer.cc PostProcessExternalString: skip the Heap::
+   UpdateExternalString call. It is a no-op in release builds (the
+   body is a single DCHECK and the function is V8_EXPORT_PRIVATE so
+   the call is not inlined across translation units). Skipping it also
+   avoids the ExternalString::ExternalPayloadSize() multiplication that
+   only existed to feed that no-op call. Replaced with a local DCHECK
+   so the debug-time invariant is unchanged.
+
 Both changes are local to deserialization fast paths and do not change
 the snapshot wire format.
 
 Signed-off-by: Divy Srivastava <me@littledivy.com>
 ---
- src/snapshot/deserializer.cc        | 18 +++++++++++++++++-
+ src/snapshot/deserializer.cc        | 26 +++++++++++++++++++++++---
  src/snapshot/snapshot-source-sink.h | 26 ++++++++++++++++----------
- 2 files changed, 33 insertions(+), 11 deletions(-)
+ 2 files changed, 39 insertions(+), 13 deletions(-)
 
 diff --git a/src/snapshot/deserializer.cc b/src/snapshot/deserializer.cc
-index ff6403f4..5bdbefb1 100644
+index ff6403f4..97f2dcf6 100644
 --- a/src/snapshot/deserializer.cc
 +++ b/src/snapshot/deserializer.cc
 @@ -6,6 +6,8 @@
@@ -73,6 +81,21 @@ index ff6403f4..5bdbefb1 100644
    js_dispatch_entries_.reserve(512);
  
  #ifdef DEBUG
+@@ -508,8 +524,12 @@ void PostProcessExternalString(Tagged<ExternalString> string,
+       static_cast<Address>(isolate->api_external_references()[index]);
+   string->InitExternalPointerFields(isolate);
+   string->set_address_as_resource(isolate, address);
+-  isolate->heap()->UpdateExternalString(string, 0,
+-                                        string->ExternalPayloadSize());
++  // Heap::UpdateExternalString is a no-op in release builds (only a
++  // DCHECK), so skip both the out-of-line call and the
++  // ExternalPayloadSize() computation that would feed it. This is a hot
++  // path during deserialization of snapshots that contain many external
++  // strings (e.g. TypeScript-style code-cache loads).
++  DCHECK(IsExternalString(string));
+   isolate->heap()->RegisterExternalString(string);
+ }
+ 
 diff --git a/src/snapshot/snapshot-source-sink.h b/src/snapshot/snapshot-source-sink.h
 index f915e1df..1a712de5 100644
 --- a/src/snapshot/snapshot-source-sink.h
