@@ -1,12 +1,13 @@
-From b4834ae7dd43430bdde5deaebd04df321154b977 Mon Sep 17 00:00:00 2001
+From 8106e77989fe450b25f894a94e44ce5cc6c1cb4a Mon Sep 17 00:00:00 2001
 From: Divy Srivastava <me@littledivy.com>
 Date: Sun, 24 May 2026 19:02:43 +0000
 Subject: [PATCH] snapshot: cut per-iteration overhead in deserializer hot
  paths
 
-Three small changes to the snapshot deserializer that together
+Four small changes to the snapshot deserializer that together
 meaningfully reduce SnapshotDeserialization wall-time on large payloads
-such as code caches produced by the TypeScript compiler.
+such as code caches produced by the TypeScript compiler and the Deno
+CLI startup snapshot.
 
 1. snapshot-source-sink.h: rewrite SnapshotByteSource::CopySlots so the
    source pointer and write count are derived once before the loop and
@@ -33,20 +34,32 @@ such as code caches produced by the TypeScript compiler.
    body is a single DCHECK and the function is V8_EXPORT_PRIVATE so
    the call is not inlined across translation units). Skipping it also
    avoids the ExternalString::ExternalPayloadSize() multiplication that
-   only existed to feed that no-op call. Replaced with a local DCHECK
-   so the debug-time invariant is unchanged.
+   only existed to feed that no-op call.
 
-Both changes are local to deserialization fast paths and do not change
+4. deserializer.h/.cc: cache ReadOnlySpace* on the Deserializer instead
+   of looking it up via isolate()->heap()->read_only_space() on every
+   kReadOnlyHeapRef bytecode. Read-only refs are the single most common
+   bytecode in startup snapshots and Deno-style framework snapshots
+   (the Deno CLI snapshot tree on littledivy.com/cli-snapshot shows
+   tens of thousands of ReadOnlyHeapRef entries across the bundled
+   modules). The cached pointer is stable for the lifetime of the
+   Deserializer: ReadOnlyDeserializer itself doesn't go through this
+   bytecode (it has its own image deserializer), and every other
+   Deserializer instance runs after the read-only space has been set
+   up.
+
+These changes are local to deserialization fast paths and do not change
 the snapshot wire format.
 
 Signed-off-by: Divy Srivastava <me@littledivy.com>
 ---
- src/snapshot/deserializer.cc        | 26 +++++++++++++++++++++++---
- src/snapshot/snapshot-source-sink.h | 26 ++++++++++++++++----------
- 2 files changed, 39 insertions(+), 13 deletions(-)
+ src/snapshot/deserializer.cc        | 30 ++++++++++++++++++++++++-----
+ src/snapshot/deserializer.h         |  8 ++++++++
+ src/snapshot/snapshot-source-sink.h | 26 +++++++++++++++----------
+ 3 files changed, 49 insertions(+), 15 deletions(-)
 
 diff --git a/src/snapshot/deserializer.cc b/src/snapshot/deserializer.cc
-index ff6403f4..97f2dcf6 100644
+index ff6403f4..1a5e7f87 100644
 --- a/src/snapshot/deserializer.cc
 +++ b/src/snapshot/deserializer.cc
 @@ -6,6 +6,8 @@
@@ -58,7 +71,15 @@ index ff6403f4..97f2dcf6 100644
  #include "src/base/logging.h"
  #include "src/codegen/assembler-inl.h"
  #include "src/codegen/reloc-info-inl.h"
-@@ -346,7 +348,21 @@ Deserializer<IsolateT>::Deserializer(IsolateT* isolate,
+@@ -325,6 +327,7 @@ Deserializer<IsolateT>::Deserializer(IsolateT* isolate,
+       attached_objects_(isolate),
+       source_(payload),
+       magic_number_(magic_number),
++      read_only_space_(isolate->heap()->read_only_space()),
+       new_maps_(isolate),
+       new_allocation_sites_(isolate),
+       new_instruction_stream_objects_(isolate),
+@@ -346,7 +349,21 @@ Deserializer<IsolateT>::Deserializer(IsolateT* isolate,
    static_assert(kEmptyBackingStoreRefSentinel == 0);
    backing_stores_.push_back({});
  
@@ -81,7 +102,7 @@ index ff6403f4..97f2dcf6 100644
    js_dispatch_entries_.reserve(512);
  
  #ifdef DEBUG
-@@ -508,8 +524,12 @@ void PostProcessExternalString(Tagged<ExternalString> string,
+@@ -508,8 +525,12 @@ void PostProcessExternalString(Tagged<ExternalString> string,
        static_cast<Address>(isolate->api_external_references()[index]);
    string->InitExternalPointerFields(isolate);
    string->set_address_as_resource(isolate, address);
@@ -96,6 +117,42 @@ index ff6403f4..97f2dcf6 100644
    isolate->heap()->RegisterExternalString(string);
  }
  
+@@ -1161,8 +1182,7 @@ int Deserializer<IsolateT>::ReadReadOnlyHeapRef(uint8_t data,
+   uint32_t chunk_index = source_.GetUint30();
+   uint32_t chunk_offset = source_.GetUint30();
+ 
+-  ReadOnlySpace* read_only_space = isolate()->heap()->read_only_space();
+-  ReadOnlyPage* page = read_only_space->pages()[chunk_index];
++  ReadOnlyPage* page = read_only_space_->pages()[chunk_index];
+   Address address = page->OffsetToAddress(chunk_offset);
+   Tagged<HeapObject> heap_object = HeapObject::FromAddress(address);
+ 
+diff --git a/src/snapshot/deserializer.h b/src/snapshot/deserializer.h
+index 98e16222..d8cb5780 100644
+--- a/src/snapshot/deserializer.h
++++ b/src/snapshot/deserializer.h
+@@ -28,6 +28,7 @@ namespace internal {
+ 
+ class HeapObject;
+ class Object;
++class ReadOnlySpace;
+ 
+ // Used for platforms with embedded constant pools to trigger deserialization
+ // of objects found in code.
+@@ -285,6 +286,13 @@ class Deserializer : public SerializerDeserializer {
+   SnapshotByteSource source_;
+   uint32_t magic_number_;
+ 
++  // Cached on construction so the kReadOnlyHeapRef bytecode handler can
++  // skip the isolate -> heap -> read_only_space() chain on every emit.
++  // Snapshot deserialization (excluding ReadOnlyDeserializer itself, which
++  // doesn't go through the kReadOnlyHeapRef bytecode) always runs after
++  // the read-only space has been set up, so the pointer is stable.
++  ReadOnlySpace* const read_only_space_;
++
+   HotObjectsList hot_objects_;
+   DirectHandleVector<Map> new_maps_;
+   DirectHandleVector<AllocationSite> new_allocation_sites_;
 diff --git a/src/snapshot/snapshot-source-sink.h b/src/snapshot/snapshot-source-sink.h
 index f915e1df..1a712de5 100644
 --- a/src/snapshot/snapshot-source-sink.h
