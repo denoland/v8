@@ -28,6 +28,7 @@ namespace internal {
 
 class HeapObject;
 class Object;
+class ReadOnlySpace;
 
 // Used for platforms with embedded constant pools to trigger deserialization
 // of objects found in code.
@@ -276,6 +277,19 @@ class Deserializer : public SerializerDeserializer {
   Tagged<HeapObject> Allocate(AllocationType allocation, int size,
                               AllocationAlignment alignment);
 
+ public:
+  // Heap image: flat-replay a baked object image (re-allocate + memcpy bodies).
+  // Returns objects restored, or -1 on offset mismatch.
+  int64_t RestoreHeapImagePages(const char* path);
+  // Re-resolve external-pointer slots via the external reference table.
+  void RestoreHeapImageExternalPointers(const char* path);
+  // Last external reference id + kind read (Heap image: ext patch table).
+  // kind: 0 = external_reference_table, 1 = api_external_references.
+  uint32_t deno_last_ext_ref_id_ = 0xFFFFFFFFu;
+  uint8_t deno_last_ext_kind_ = 0xFFu;
+
+ private:
+
   // Cached current isolate.
   IsolateT* isolate_;
 
@@ -284,6 +298,13 @@ class Deserializer : public SerializerDeserializer {
 
   SnapshotByteSource source_;
   uint32_t magic_number_;
+
+  // Cached on construction so the kReadOnlyHeapRef bytecode handler can
+  // skip the isolate -> heap -> read_only_space() chain on every emit.
+  // Snapshot deserialization (excluding ReadOnlyDeserializer itself, which
+  // doesn't go through the kReadOnlyHeapRef bytecode) always runs after
+  // the read-only space has been set up, so the pointer is stable.
+  ReadOnlySpace* const read_only_space_;
 
   HotObjectsList hot_objects_;
   DirectHandleVector<Map> new_maps_;

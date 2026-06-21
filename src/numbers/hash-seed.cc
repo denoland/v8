@@ -5,6 +5,7 @@
 #include "src/numbers/hash-seed.h"
 
 #include <cstddef>
+#include <cstdlib>
 
 #include "src/execution/isolate.h"
 #include "src/flags/flags.h"
@@ -85,8 +86,14 @@ void HashSeed::InitializeRoots(Isolate* isolate) {
   DCHECK(!isolate->heap()->deserialization_complete());
   uint64_t seed;
   if (v8_flags.hash_seed == 0) {
-    int64_t rnd = isolate->random_number_generator()->NextInt64();
-    seed = static_cast<uint64_t>(rnd);
+    // Heap image: pin the hash seed via env (cheap — avoids the ~0.7ms --v8-flags
+    // CLI re-parse path) so a warm mmap restore's baked hashes stay valid.
+    if (const char* s = getenv("DENO_HEAP_IMAGE_HASH_SEED")) {
+      seed = static_cast<uint64_t>(atoll(s));
+    } else {
+      int64_t rnd = isolate->random_number_generator()->NextInt64();
+      seed = static_cast<uint64_t>(rnd);
+    }
   } else {
     seed = static_cast<uint64_t>(v8_flags.hash_seed);
   }

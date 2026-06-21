@@ -57,26 +57,32 @@ class SnapshotByteSource final {
   }
 
   void CopySlots(Address* dest, int number_of_slots) {
+    // Hoist `position_` and `data_` out of the inner loop so the compiler
+    // doesn't have to assume they alias with `dest` and reload them each
+    // iteration. Each tagged slot is still stored with Relaxed_Store so the
+    // concurrent marker continues to see word-atomic writes.
+    const uint8_t* src = data_ + position_;
     base::AtomicWord* start = reinterpret_cast<base::AtomicWord*>(dest);
-    base::AtomicWord* end = start + number_of_slots;
-    for (base::AtomicWord* p = start; p < end;
-         ++p, position_ += sizeof(base::AtomicWord)) {
+    for (int i = 0; i < number_of_slots; ++i) {
       base::AtomicWord val;
-      memcpy(&val, data_ + position_, sizeof(base::AtomicWord));
-      base::Relaxed_Store(p, val);
+      memcpy(&val, src + i * sizeof(base::AtomicWord),
+             sizeof(base::AtomicWord));
+      base::Relaxed_Store(start + i, val);
     }
+    position_ += number_of_slots * sizeof(base::AtomicWord);
   }
 
 #ifdef V8_COMPRESS_POINTERS
   void CopySlots(Tagged_t* dest, int number_of_slots) {
+    const uint8_t* src = data_ + position_;
     AtomicTagged_t* start = reinterpret_cast<AtomicTagged_t*>(dest);
-    AtomicTagged_t* end = start + number_of_slots;
-    for (AtomicTagged_t* p = start; p < end;
-         ++p, position_ += sizeof(AtomicTagged_t)) {
+    for (int i = 0; i < number_of_slots; ++i) {
       AtomicTagged_t val;
-      memcpy(&val, data_ + position_, sizeof(AtomicTagged_t));
-      base::Relaxed_Store(p, val);
+      memcpy(&val, src + i * sizeof(AtomicTagged_t),
+             sizeof(AtomicTagged_t));
+      base::Relaxed_Store(start + i, val);
     }
+    position_ += number_of_slots * sizeof(AtomicTagged_t);
   }
 #endif
 

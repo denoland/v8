@@ -13,6 +13,9 @@
 namespace v8 {
 namespace internal {
 
+// Defined in deserializer.cc (DENO_HEAP_DUMP).
+void EmitHeapDump(const char* label);
+
 // static
 MaybeDirectHandle<Context> ContextDeserializer::DeserializeContext(
     Isolate* isolate, const SnapshotData* data, size_t context_index,
@@ -71,6 +74,8 @@ MaybeDirectHandle<Object> ContextDeserializer::Deserialize(
   }
 
   if (should_rehash()) Rehash();
+
+  EmitHeapDump("context");
 
   return result;
 }

@@ -5,6 +5,7 @@
 #include "src/objects/string-table.h"
 
 #include <atomic>
+#include <cstdio>
 
 #include "src/base/atomicops.h"
 #include "src/base/macros.h"
@@ -179,6 +180,50 @@ int StringTable::NumberOfElements() const {
     base::MutexGuard table_write_guard(&write_mutex_);
     return data_.load(std::memory_order_relaxed)->table().number_of_elements();
   }
+}
+
+// Heap image: dump the off-heap table verbatim (header counts + the compressed
+// element slots). Under a pinned hash seed and identical heap layout these
+// bytes reproduce exactly on a warm restore.
+void StringTable::BakeHeapImage(const char* path) const {
+  FILE* f = fopen(path, "wb");
+  if (!f) return;
+  Data* d = data_.load(std::memory_order_acquire);
+  int capacity = d->table().capacity();
+  int noe = d->table().number_of_elements();
+  int nod = d->table().number_of_deleted_elements();
+  fwrite(&capacity, sizeof(int), 1, f);
+  fwrite(&noe, sizeof(int), 1, f);
+  fwrite(&nod, sizeof(int), 1, f);
+  size_t n = static_cast<size_t>(capacity) *
+             StringTable::OffHeapStringHashSet::kEntrySize;
+  fwrite(d->table().image_elements(), sizeof(Tagged_t), n, f);
+  fclose(f);
+}
+
+// Heap image: rebuild the off-heap table by raw memcpy instead of re-inserting
+// every interned string. Allocates a Data of the baked capacity, copies the
+// element slots back (they hold compressed cage offsets that resolve to the
+// identically-placed restored strings), and swaps it in.
+void StringTable::RestoreHeapImage(const char* path) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return;
+  int capacity = 0, noe = 0, nod = 0;
+  if (fread(&capacity, sizeof(int), 1, f) != 1 ||
+      fread(&noe, sizeof(int), 1, f) != 1 ||
+      fread(&nod, sizeof(int), 1, f) != 1) {
+    fclose(f);
+    return;
+  }
+  std::unique_ptr<Data> nd = Data::New(capacity);
+  size_t n = static_cast<size_t>(capacity) *
+             StringTable::OffHeapStringHashSet::kEntrySize;
+  size_t rd = fread(nd->table().image_elements(), sizeof(Tagged_t), n, f);
+  fclose(f);
+  if (rd != n) return;
+  nd->table().set_image_counts(noe, nod);
+  Data* old = data_.exchange(nd.release(), std::memory_order_release);
+  delete old;
 }
 
 // InternalizedStringKey carries a string/internalized-string object as key.

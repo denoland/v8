@@ -5,6 +5,7 @@
 #include "src/snapshot/startup-deserializer.h"
 
 #include "src/api/api.h"
+#include "src/codegen/compilation-cache.h"
 #include "src/codegen/flush-instruction-cache.h"
 #include "src/execution/v8threads.h"
 #include "src/handles/handles-inl.h"
@@ -12,12 +13,55 @@
 #include "src/logging/counters-scopes.h"
 #include "src/logging/log.h"
 #include "src/objects/oddball.h"
+#include "src/objects/string-table.h"
 #include "src/roots/roots-inl.h"
 
 namespace v8 {
 namespace internal {
 
+// Defined in deserializer.cc (heap-image bake/restore + DENO_HEAP_DUMP).
+void EmitHeapDump(const char* label);
+bool HeapImageVerbose();
+void BakeHeapImageRoots(Isolate* isolate, const char* path);
+void RestoreHeapImageRoots(Isolate* isolate, const char* path);
+void BakeHeapImagePages(Isolate* isolate, const char* path);
+
 void StartupDeserializer::DeserializeIntoIsolate() {
+  // Heap image: warm restore (experimental, gated): replay the baked isolate heap
+  // image instead of running the object-graph deserializer. First milestone:
+  // re-allocate + memcpy objects and verify offsets match the bake.
+  if (const char* base = getenv("DENO_HEAP_IMAGE_RESTORE")) {
+    char pages_path[1024], roots_path[1024], ep1[1024], ep2[1024];
+    snprintf(pages_path, sizeof(pages_path), "%s.pages", base);
+    snprintf(roots_path, sizeof(roots_path), "%s.roots", base);
+    snprintf(ep1, sizeof(ep1), "%s.shared.extp", base);
+    snprintf(ep2, sizeof(ep2), "%s.isolate.extp", base);
+    base::ElapsedTimer t;
+    t.Start();
+    // Whole-page adoption (shared-heap deser was skipped; these pages hold both
+    // shared + startup objects).
+    int64_t n = RestoreHeapImagePages(pages_path);
+    RestoreHeapImageRoots(isolate(), roots_path);
+    RestoreHeapImageExternalPointers(ep1);  // shared-phase external pointers
+    RestoreHeapImageExternalPointers(ep2);  // startup-phase external pointers
+    // Raw memcpy restore of the off-heap string table (needs pinned seed).
+    char stra_path[1024];
+    snprintf(stra_path, sizeof(stra_path), "%s.strtabraw", base);
+    isolate()->string_table()->RestoreHeapImage(stra_path);
+    // Start the compilation cache empty (safe — V8 recompiles on demand). The
+    // cache isn't part of the baked image, so this avoids any stale entry.
+    isolate()->compilation_cache()->Clear();
+    double ms = t.Elapsed().InMillisecondsF();
+    if (HeapImageVerbose())
+      fprintf(stderr, "[heap-image] startup replay: %lld pages in %.3f ms\n",
+              (long long)n, ms);
+    return;
+  }
+  // Flush objects accumulated by the (already-run) shared-heap deserializer
+  // under their own label, so the "isolate" image contains startup objects
+  // only. The shared-heap deser runs normally on restore, so its objects must
+  // not be in the replay set.
+  EmitHeapDump("shared");
   TRACE_EVENT0("v8", "V8.DeserializeIsolate");
   RCS_SCOPE(isolate(), RuntimeCallCounterId::kDeserializeIsolate);
   base::ElapsedTimer timer;
@@ -94,6 +138,19 @@ void StartupDeserializer::DeserializeIntoIsolate() {
     const size_t bytes = source()->length();
     const double ms = timer.Elapsed().InMillisecondsF();
     PrintF("[Deserializing isolate (%zu bytes) took %0.3f ms]\n", bytes, ms);
+  }
+
+  EmitHeapDump("isolate");
+  if (const char* base = getenv("DENO_HEAP_IMAGE_BAKE")) {
+    char roots_path[1024], pages_path[1024];
+    snprintf(roots_path, sizeof(roots_path), "%s.roots", base);
+    BakeHeapImageRoots(isolate(), roots_path);
+    snprintf(pages_path, sizeof(pages_path), "%s.pages", base);
+    BakeHeapImagePages(isolate(), pages_path);
+    // Off-heap string table baked as a raw blob (memcpy restore).
+    char stra_path[1024];
+    snprintf(stra_path, sizeof(stra_path), "%s.strtabraw", base);
+    isolate()->string_table()->BakeHeapImage(stra_path);
   }
 }
 
