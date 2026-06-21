@@ -141,6 +141,16 @@ class OffHeapHashTableBase {
   inline void IterateElementsRange(Root root, RootVisitor* visitor, int start,
                                    int end);
 
+  // Heap image: raw access for byte-level bake/restore of the off-heap table.
+  // Valid only under a pinned hash seed + identical heap layout, where the
+  // compressed-pointer element slots round-trip across processes.
+  const Tagged_t* image_elements() const { return elements_; }
+  Tagged_t* image_elements() { return elements_; }
+  void set_image_counts(int noe, int nod) {
+    number_of_elements_ = noe;
+    number_of_deleted_elements_ = nod;
+  }
+
  protected:
   explicit OffHeapHashTableBase(int capacity);
 

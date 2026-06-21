@@ -91,6 +91,13 @@ class V8_EXPORT_PRIVATE StringTable {
   // Insert the single empty string. Only for use during heap bootstrapping.
   void InsertEmptyStringForBootstrapping(Isolate* isolate);
 
+  // Heap image: byte-level bake/restore of the off-heap table, replacing the
+  // per-string InsertForIsolateDeserialization loop on warm restore. Sound
+  // only with a pinned hash seed and an identical heap layout (compressed
+  // element slots resolve to the same restored string objects).
+  void BakeHeapImage(const char* path) const;
+  void RestoreHeapImage(const char* path);
+
   void Print(PtrComprCageBase cage_base) const;
   size_t GetCurrentMemoryUsage() const;
 

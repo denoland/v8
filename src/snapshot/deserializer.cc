@@ -6,7 +6,19 @@
 
 #include <inttypes.h>
 
+#include <algorithm>
+#include <map>
+#include <sstream>
+#include <vector>
+
 #include "src/base/logging.h"
+#include "src/base/platform/time.h"
+#include "src/heap/memory-allocator.h"
+#include "src/heap/normal-page.h"
+#include "src/heap/large-page.h"
+#include "src/heap/large-spaces.h"
+#include "src/heap/paged-spaces.h"
+#include "src/heap/read-only-heap.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/reloc-info-inl.h"
 #include "src/common/assert-scope.h"
@@ -25,6 +37,7 @@
 #include "src/objects/maybe-object.h"
 #include "src/objects/objects-body-descriptors-inl.h"
 #include "src/objects/objects.h"
+#include "src/objects/script-inl.h"
 #include "src/objects/slots.h"
 #include "src/objects/string.h"
 #include "src/roots/roots.h"
@@ -36,16 +49,664 @@
 #include "src/snapshot/snapshot-data.h"
 #include "src/utils/memcopy.h"
 
+// --- snapshot object histogram (DENO_SNAPSHOT_HISTO) ---
+// Defined before object-macros.h: that header #defines names that break std
+// container/template instantiation, so the std::map/std::sort usage must live
+// outside its region.
+namespace v8::internal {
+namespace {
+struct SnapHistoEntry {
+  uint64_t count = 0;
+  uint64_t bytes = 0;
+};
+inline std::map<int, SnapHistoEntry>& SnapshotHisto() {
+  static std::map<int, SnapHistoEntry>* h = new std::map<int, SnapHistoEntry>();
+  return *h;
+}
+inline bool SnapshotHistoEnabled() {
+  static int v = getenv("DENO_SNAPSHOT_HISTO") ? 1 : 0;
+  return v == 1;
+}
+inline void SnapshotHistoRecord(InstanceType t, int size) {
+  if (!SnapshotHistoEnabled()) return;
+  auto& e = SnapshotHisto()[static_cast<int>(t)];
+  e.count++;
+  e.bytes += size;
+}
+inline void SnapshotHistoDump(const char* label) {
+  if (!SnapshotHistoEnabled()) return;
+  auto& h = SnapshotHisto();
+  if (h.empty()) return;
+  std::vector<std::pair<int, SnapHistoEntry>> v(h.begin(), h.end());
+  std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
+    return a.second.bytes > b.second.bytes;
+  });
+  uint64_t tc = 0, tb = 0;
+  for (auto& e : v) {
+    tc += e.second.count;
+    tb += e.second.bytes;
+  }
+  fprintf(stderr, "[snaphisto] === %s: %" PRIu64 " objs, %" PRIu64 " bytes ===\n",
+          label, tc, tb);
+  for (auto& e : v) {
+    std::ostringstream os;
+    os << static_cast<InstanceType>(e.first);
+    fprintf(stderr, "[snaphisto] %10" PRIu64 " objs %10" PRIu64 " B  %s\n",
+            e.second.count, e.second.bytes, os.str().c_str());
+  }
+  h.clear();
+}
+inline std::vector<std::pair<std::string, int>>& SnapshotScripts() {
+  static auto* v = new std::vector<std::pair<std::string, int>>();
+  return *v;
+}
+inline void SnapshotRecordScriptName(Tagged<String> name, int infos) {
+  if (!SnapshotHistoEnabled()) return;
+  auto c = name->ToCString();
+  SnapshotScripts().push_back({std::string(c ? c.get() : "<null>"), infos});
+}
+inline void SnapshotScriptDump() {
+  if (!SnapshotHistoEnabled()) return;
+  auto& v = SnapshotScripts();
+  if (v.empty()) return;
+  std::sort(v.begin(), v.end(),
+            [](const auto& a, const auto& b) { return a.second > b.second; });
+  fprintf(stderr, "[snapscript] === %zu scripts (by infos count) ===\n", v.size());
+  for (auto& e : v)
+    fprintf(stderr, "[snapscript] %5d infos  %s\n", e.second, e.first.c_str());
+  v.clear();
+}
+
+// --- deno heap determinism dump (DENO_HEAP_DUMP) ---
+// Records (cage-relative offset, raw address, size, ro?) for every
+// deserialized object, then at end-of-phase hashes each object's bytes and
+// emits a combined position-independent hash. Two runs producing the same
+// hash => the post-deser heap image is reproducible/position-independent.
+inline bool HeapDumpEnabled() {
+  static int v = getenv("DENO_HEAP_DUMP") ? 1 : 0;
+  return v == 1;
+}
+struct HeapDumpRec {
+  uint32_t off;
+  uintptr_t addr;
+  uint32_t size;
+  uint8_t ro;
+  uint16_t type;
+  uint8_t space;
+  uint8_t align;
+};
+inline std::vector<HeapDumpRec>& HeapDumpRecs() {
+  static auto* v = new std::vector<HeapDumpRec>();
+  return *v;
+}
+inline const char* HeapDumpFile() {
+  return getenv("DENO_HEAP_DUMP_FILE");
+}
+inline uint64_t DenoFnv(const uint8_t* p, size_t n) {
+  uint64_t h = 1469598103934665603ull;
+  for (size_t i = 0; i < n; i++) {
+    h ^= p[i];
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+// External-pointer "patch table" (Heap image: ): every external-pointer slot written
+// during deser. On a warm mmap-restore these are the ONLY slots needing rebuild
+// (analog of ART patchoat PatchArtMethods). off = cage-offset of the slot.
+struct ExtSlotRec {
+  uint32_t off;
+  uint32_t id;
+  uint8_t kind;  // 0=external_reference_table, 1=api_external_references, 0xFF=raw
+};
+inline std::vector<ExtSlotRec>& ExtSlotRecs() {
+  static auto* v = new std::vector<ExtSlotRec>();
+  return *v;
+}
+// Restored cage-offset ranges [start,end) (RO + adopted pages). Lets the string
+// table restore bounds-check baked offsets numerically (no deref → no fault on
+// offsets pointing to spaces we don't restore, e.g. transient new-space).
+inline std::vector<std::pair<uint32_t, uint32_t>>& HeapImageRanges() {
+  static auto* v = new std::vector<std::pair<uint32_t, uint32_t>>();
+  return *v;
+}
+inline bool HeapImageInRange(uint32_t off) {
+  for (auto& r : HeapImageRanges())
+    if (off >= r.first && off < r.second) return true;
+  return false;
+}
+}  // namespace
+}  // namespace v8::internal
+
 // Has to be the last include (doesn't have include guards)
 #include "src/objects/object-macros.h"
 
 namespace v8::internal {
+
+// Emits the accumulated heap-dump hash for a deser phase and clears state.
+// Declared without internal linkage so startup/context deser TUs can call it.
+void EmitHeapDump(const char* label) {
+  if (!HeapDumpEnabled()) return;
+  auto& recs = HeapDumpRecs();
+  std::sort(recs.begin(), recs.end(),
+            [](const HeapDumpRec& a, const HeapDumpRec& b) {
+              return a.off < b.off;
+            });
+  uint64_t combined = 1469598103934665603ull;
+  uint64_t ro_combined = 1469598103934665603ull;
+  uint64_t objs = 0, bytes = 0, ro_objs = 0, ro_bytes = 0;
+  // Optional per-object dump: "<phase> <off> <type-name> <size> <hash>" per
+  // line. Lets a differ tally WHICH instance types vary across runs.
+  FILE* f = nullptr;
+  if (HeapDumpFile()) f = fopen(HeapDumpFile(), "a");
+  for (auto& r : recs) {
+    uint64_t ch = DenoFnv(reinterpret_cast<const uint8_t*>(r.addr), r.size);
+    uint64_t* tgt = r.ro ? &ro_combined : &combined;
+    uint64_t* o = r.ro ? &ro_objs : &objs;
+    uint64_t* b = r.ro ? &ro_bytes : &bytes;
+    *tgt ^= r.off;
+    *tgt *= 1099511628211ull;
+    *tgt ^= ch;
+    *tgt *= 1099511628211ull;
+    (*o)++;
+    *b += r.size;
+    if (f) {
+      std::ostringstream os;
+      os << static_cast<InstanceType>(r.type);
+      fprintf(f, "%s %u %s %u %016llx\n", label, r.off, os.str().c_str(),
+              r.size, (unsigned long long)ch);
+    }
+  }
+  if (f) fclose(f);
+  // External-pointer patch table for this phase (slots accumulated since last
+  // emit). These are the Heap image: warm-load fixups.
+  auto& ext = ExtSlotRecs();
+  if (HeapDumpFile() && !ext.empty()) {
+    char p[1024];
+    snprintf(p, sizeof(p), "%s.ext", HeapDumpFile());
+    FILE* ef = fopen(p, "a");
+    if (ef) {
+      for (auto& e : ext) {
+        fprintf(ef, "%s %u id=%u\n", label, e.off, e.id);
+      }
+      fclose(ef);
+    }
+  }
+  fprintf(stderr,
+          "[heapdump] %s: nonRO objs=%llu bytes=%llu hash=%016llx | RO "
+          "objs=%llu bytes=%llu hash=%016llx | extslots=%zu\n",
+          label, (unsigned long long)objs, (unsigned long long)bytes,
+          (unsigned long long)combined, (unsigned long long)ro_objs,
+          (unsigned long long)ro_bytes, (unsigned long long)ro_combined,
+          ext.size());
+
+  // Heap image: BAKE (DENO_HEAP_IMAGE_BAKE=<file>): write a flat replay image for this
+  // phase: per object [space u8][off u32][size u32][body bytes], in allocation
+  // order. Restore re-allocates each in order and memcpys the body; internal
+  // compressed pointers stay valid because allocation is deterministic.
+  if (getenv("DENO_HEAP_IMAGE_BAKE")) {
+    char p[1024];
+    snprintf(p, sizeof(p), "%s.%s", getenv("DENO_HEAP_IMAGE_BAKE"), label);
+    FILE* bf = fopen(p, "wb");
+    if (bf) {
+      for (auto& r : recs) {
+        if (r.ro) continue;
+        fwrite(&r.space, 1, 1, bf);
+        fwrite(&r.align, 1, 1, bf);
+        fwrite(&r.off, 4, 1, bf);
+        fwrite(&r.size, 4, 1, bf);
+        fwrite(reinterpret_cast<const void*>(r.addr), 1, r.size, bf);
+      }
+      fclose(bf);
+      fprintf(stderr, "[heap-image] %s -> %s (%zu objs)\n", label, p, recs.size());
+    }
+    // External-pointer patch table: (off u32, ref_id u32) per slot.
+    char ep[1024];
+    snprintf(ep, sizeof(ep), "%s.%s.extp", getenv("DENO_HEAP_IMAGE_BAKE"), label);
+    FILE* ef = fopen(ep, "wb");
+    if (ef) {
+      uint32_t en = static_cast<uint32_t>(ext.size());
+      fwrite(&en, 4, 1, ef);
+      for (auto& e : ext) {
+        fwrite(&e.off, 4, 1, ef);
+        fwrite(&e.id, 4, 1, ef);
+        fwrite(&e.kind, 1, 1, ef);
+      }
+      fclose(ef);
+      fprintf(stderr, "[heap-image] %s extp %u slots\n", label, en);
+    }
+  }
+
+  // Heap image: warm-restore cost on REAL deserialized data (DENO_RESTORE_BENCH):
+  // (a) bulk-copy all object bytes (= non-mmap restore; mmap-COW variant ~0),
+  // (b) apply the external-pointer patch table. This is the CPU work that
+  // replaces the object-graph deserializer on a warm start.
+  if (getenv("DENO_RESTORE_BENCH")) {
+    size_t tot = 0;
+    for (auto& r : recs) tot += r.size;
+    std::vector<uint8_t> scratch(tot ? tot : 1);
+    base::ElapsedTimer t;
+    t.Start();
+    size_t pos = 0;
+    for (auto& r : recs) {
+      memcpy(scratch.data() + pos, reinterpret_cast<void*>(r.addr), r.size);
+      pos += r.size;
+    }
+    double copy_us = t.Elapsed().InMillisecondsF() * 1000.0;
+    // Apply patches: scatter a store per external slot (realistic warm fixup).
+    t.Start();
+    volatile uintptr_t sink = 0;
+    for (auto& e : ext) {
+      size_t idx = tot ? (static_cast<size_t>(e.off) % tot) : 0;
+      *reinterpret_cast<volatile uint8_t*>(scratch.data() + idx) =
+          static_cast<uint8_t>(e.id);
+      sink += e.id;
+    }
+    double patch_us = t.Elapsed().InMillisecondsF() * 1000.0;
+    fprintf(stderr,
+            "[restore] %s copy=%.1fus patch=%.1fus (mmap-variant total~=%.1fus) "
+            "bytes=%zu extslots=%zu\n",
+            label, copy_us, patch_us, patch_us, tot, ext.size());
+  }
+
+  recs.clear();
+  ext.clear();
+}
 
 #ifdef V8_COMPRESS_POINTERS
 #define PRIxTAGGED PRIx32
 #else
 #define PRIxTAGGED PRIxPTR
 #endif
+
+// === Heap image: flat heap-image bake + restore =============================
+
+// Verbose restore logging — read once. Off by default so the timed restore
+// run isn't polluted by stderr writes. Set DENO_HEAP_IMAGE_VERBOSE=1 to re-enable.
+bool HeapImageVerbose() {
+  static bool v = getenv("DENO_HEAP_IMAGE_VERBOSE") != nullptr;
+  return v;
+}
+
+template <typename IsolateT>
+int64_t Deserializer<IsolateT>::RestoreHeapImagePages(const char* path) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return -1;
+  // Read the whole image into memory once (per-object fread = ~76k syscalls).
+  fseek(f, 0, SEEK_END);
+  long fsz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  std::vector<uint8_t> buf(fsz > 0 ? fsz : 1);
+  size_t rd = fread(buf.data(), 1, fsz, f);
+  fclose(f);
+  Isolate* iso = main_thread_isolate();
+  Heap* heap = iso->heap();
+  MemoryAllocator* ma = heap->memory_allocator();
+  int64_t pages = 0;
+  bool mismatch = false;
+  HeapImageRanges().clear();
+  // RO space extent (one contiguous compressed region in this build).
+  {
+    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+    for (ReadOnlyHeapObjectIterator it(heap->read_only_space());;) {
+      Tagged<HeapObject> o = it.Next();
+      if (o.is_null()) break;
+      uint32_t off = static_cast<uint32_t>(
+          V8HeapCompressionScheme::CompressObject(o.ptr()));
+      if (off < lo) lo = off;
+      uint32_t e = off + static_cast<uint32_t>(o->Size(iso));
+      if (e > hi) hi = e;
+    }
+    if (lo < hi) HeapImageRanges().push_back({lo, hi});
+  }
+  // Whole-page adoption: each record is one heap page's used area. AllocatePage
+  // returns a page-aligned chunk at the next sequential cage offset (matches the
+  // baked page, since old/trusted space is empty here), then bulk-memcpy the
+  // used area. NO per-object loop — this is the actual mmap-class win.
+  const uint8_t* p = buf.data();
+  const uint8_t* pend = buf.data() + rd;
+  while (p + 9 <= pend) {
+    uint8_t space = *p++;
+    uint32_t off, used;
+    memcpy(&off, p, 4);
+    p += 4;
+    memcpy(&used, p, 4);
+    p += 4;
+    if (p + used > pend) break;
+    PagedSpace* ps = nullptr;
+    Executability exec = NOT_EXECUTABLE;
+    LargeObjectSpace* lo = nullptr;
+    switch (static_cast<AllocationSpace>(space)) {
+      case OLD_SPACE:
+        ps = static_cast<PagedSpace*>(heap->old_space());
+        break;
+      case CODE_SPACE:
+        ps = static_cast<PagedSpace*>(heap->code_space());
+        exec = EXECUTABLE;
+        break;
+      case TRUSTED_SPACE:
+        ps = static_cast<PagedSpace*>(heap->trusted_space());
+        break;
+      case SHARED_SPACE:
+        ps = static_cast<PagedSpace*>(heap->shared_space());
+        break;
+      case LO_SPACE:
+        lo = heap->lo_space();
+        break;
+      case CODE_LO_SPACE:
+        lo = heap->code_lo_space();
+        exec = EXECUTABLE;
+        break;
+      case TRUSTED_LO_SPACE:
+        lo = heap->trusted_lo_space();
+        break;
+      default:
+        ps = static_cast<PagedSpace*>(heap->old_space());
+        break;
+    }
+    Address area;
+    if (lo) {
+      LargePage* lp = ma->AllocateLargePage(lo, used, exec, AllocationHint());
+      if (lp == nullptr) {
+        mismatch = true;
+        break;
+      }
+      area = lp->area_start();
+      uint32_t got =
+          static_cast<uint32_t>(V8HeapCompressionScheme::CompressAny(area));
+      if (HeapImageVerbose())
+        fprintf(stderr, "[heap-image]   LO space=%u want=%u got=%u used=%u\n",
+                space, off, got, used);
+      if (got != off) {
+        fprintf(stderr, "[heap-image] LO MISMATCH %lld: baked=%u got=%u\n",
+                (long long)pages, off, got);
+        mismatch = true;
+        break;
+      }
+      memcpy(reinterpret_cast<void*>(area), p, used);
+      lo->AddPage(lp, used);
+    } else {
+      NormalPage* page = ma->AllocatePage(
+          MemoryAllocator::AllocationMode::kRegular, ps, exec);
+      if (page == nullptr) {
+        mismatch = true;
+        break;
+      }
+      area = page->area_start();
+      uint32_t got =
+          static_cast<uint32_t>(V8HeapCompressionScheme::CompressAny(area));
+      if (HeapImageVerbose())
+        fprintf(stderr, "[heap-image]   page space=%u want=%u got=%u used=%u\n",
+                space, off, got, used);
+      if (got != off || used > page->area_size()) {
+        fprintf(stderr, "[heap-image] PAGE MISMATCH %lld: baked=%u got=%u\n",
+                (long long)pages, off, got);
+        mismatch = true;
+        break;
+      }
+      memcpy(reinterpret_cast<void*>(area), p, used);
+      ps->AddPage(page);
+      ps->Free(area + used, page->area_size() - used);
+    }
+    HeapImageRanges().push_back({off, off + used});
+    p += used;
+    pages++;
+  }
+  if (mismatch) return -1;
+
+  // No rehash pass: restored objects carry the bake isolate's hash-seed in
+  // their cached hashes. The restore isolate pins the same seed (see
+  // DENO_HEAP_IMAGE_HASH_SEED in HashSeed::InitializeRoots), so the memcpy'd hashes are
+  // already valid and every hash-based lookup hits — the O(heap) rehash that an
+  // unpinned seed would require is unnecessary, which is the real speed win.
+  if (HeapImageVerbose())
+    fprintf(stderr, "[heap-image] restored %lld pages\n", (long long)pages);
+  return pages;
+}
+
+template <typename IsolateT>
+void Deserializer<IsolateT>::RestoreHeapImageExternalPointers(const char* path) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return;
+  uint32_t n = 0;
+  if (fread(&n, 4, 1, f) != 1) {
+    fclose(f);
+    return;
+  }
+  ExternalReferenceTable* ert =
+      main_thread_isolate()->external_reference_table();
+  const intptr_t* api_refs = main_thread_isolate()->api_external_references();
+  uint32_t patched = 0, skipped = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    uint32_t off, id;
+    uint8_t kind;
+    if (fread(&off, 4, 1, f) != 1) break;
+    if (fread(&id, 4, 1, f) != 1) break;
+    if (fread(&kind, 1, 1, f) != 1) break;
+    Address resolved;
+    if (kind == 0) {
+      resolved = ert->address(id);
+    } else if (kind == 1 && api_refs) {
+      resolved = static_cast<Address>(api_refs[id]);
+    } else {
+      skipped++;
+      continue;
+    }
+    Address slot =
+        V8HeapCompressionScheme::DecompressTagged(static_cast<Tagged_t>(off));
+    *reinterpret_cast<Address*>(slot) = resolved;
+    patched++;
+  }
+  fclose(f);
+  if (HeapImageVerbose())
+    fprintf(stderr, "[heap-image] ext ptrs: %u patched, %u skipped\n", patched,
+            skipped);
+}
+
+// Whole-page bake: dump every old/trusted-space page's used area (page-aligned)
+// so a warm restore can adopt actual pages (segments share pages, so per-object
+// segment adoption can't reproduce offsets — whole pages can).
+void BakeHeapImagePages(Isolate* isolate, const char* path) {
+  FILE* f = fopen(path, "wb");
+  if (!f) return;
+  Heap* heap = isolate->heap();
+  // Flush linear allocation buffers so each page's HighWaterMark reflects the
+  // REAL used extent — the active allocation page keeps its top in the LAB, so
+  // without this its objects (incl. FunctionTemplateInfo referenced by the
+  // startup_object_cache) read as used=0 and aren't captured.
+  heap->FreeLinearAllocationAreas();
+  // Capture EVERY paged space's pages (old/code/trusted/shared/...), tagged by
+  // AllocationSpace identity, in GLOBAL cage-offset order — the deserializer
+  // interleaves page allocation across spaces, so restore must re-allocate in
+  // that exact order (incl. empty pages) to reproduce cage offsets.
+  struct Pg {
+    uint8_t id;  // AllocationSpace identity
+    uint32_t off, used;
+    Address a0;
+  };
+  std::vector<Pg> pgs;
+  PagedSpaceIterator it(heap);
+  for (PagedSpace* sp = it.Next(); sp != nullptr; sp = it.Next()) {
+    int pc = 0;
+    for (NormalPage* page = sp->first_page(); page != nullptr;
+         page = page->next_page()) {
+      Address a0 = page->area_start();
+      uint32_t used = static_cast<uint32_t>(page->HighWaterMark() - a0);
+      pc++;
+      pgs.push_back({static_cast<uint8_t>(sp->identity()),
+                     static_cast<uint32_t>(
+                         V8HeapCompressionScheme::CompressAny(a0)),
+                     used, a0});
+    }
+    fprintf(stderr, "[heap-image] space identity=%d has %d pages\n", sp->identity(),
+            pc);
+  }
+  // Large-object spaces: each LargePage holds one object (>128KB). Bytecode and
+  // big arrays live here, so they must be captured too. id = identity, used =
+  // object size (= page used area).
+  LargeObjectSpace* los[3] = {heap->lo_space(), heap->code_lo_space(),
+                              heap->trusted_lo_space()};
+  for (int l = 0; l < 3; l++) {
+    if (!los[l]) continue;
+    int lc = 0;
+    for (LargePage* page = los[l]->first_page(); page != nullptr;
+         page = page->next_page()) {
+      Address a0 = page->area_start();
+      uint32_t used =
+          static_cast<uint32_t>(page->GetObject()->Size() );
+      pgs.push_back({static_cast<uint8_t>(los[l]->identity()),
+                     static_cast<uint32_t>(
+                         V8HeapCompressionScheme::CompressAny(a0)),
+                     used, a0});
+      lc++;
+    }
+    fprintf(stderr, "[heap-image] LO identity=%d has %d pages\n", los[l]->identity(),
+            lc);
+  }
+  std::sort(pgs.begin(), pgs.end(),
+            [](const Pg& a, const Pg& b) { return a.off < b.off; });
+  for (auto& pg : pgs) {
+    fwrite(&pg.id, 1, 1, f);
+    fwrite(&pg.off, 4, 1, f);
+    fwrite(&pg.used, 4, 1, f);
+    fwrite(reinterpret_cast<const void*>(pg.a0), 1, pg.used, f);
+    fprintf(stderr, "[heap-image]   page id=%u off=%u used=%u\n", pg.id, pg.off,
+            pg.used);
+  }
+  fclose(f);
+  fprintf(stderr, "[heap-image] pages -> %s (%zu pages)\n", path, pgs.size());
+}
+
+// The off-heap string table is baked/restored verbatim as a raw blob (see
+// StringTable::BakeHeapImage / RestoreHeapImage in objects/string-table.cc);
+// under a pinned hash seed the compressed element slots round-trip exactly, so
+// no per-string re-insertion or canonicalization pass is needed here.
+
+// Bake/restore the strong roots table as cage-offsets (public-API only).
+void BakeHeapImageRoots(Isolate* isolate, const char* path) {
+  FILE* f = fopen(path, "wb");
+  if (!f) return;
+  const RootsTable& roots = isolate->roots_table();
+  uint32_t n = static_cast<uint32_t>(RootsTable::kEntriesCount);
+  fwrite(&n, 4, 1, f);
+  for (uint32_t i = 0; i < n; i++) {
+    Address v = roots[static_cast<RootIndex>(i)];
+    Tagged<Object> o(v);
+    uint8_t is_smi = IsSmi(o) ? 1 : 0;
+    fwrite(&is_smi, 1, 1, f);
+    if (is_smi) {
+      fwrite(&v, sizeof(Address), 1, f);
+    } else {
+      uint32_t off = V8HeapCompressionScheme::CompressObject(v);
+      fwrite(&off, 4, 1, f);
+    }
+  }
+  // Also bake the builtin_table (a separate root array in IsolateData): each
+  // entry is a Code pointer (or 0). Stored as offsets; 0 stays 0.
+  uint32_t bn = static_cast<uint32_t>(Builtins::kBuiltinCount);
+  fwrite(&bn, 4, 1, f);
+  Address* bt = isolate->builtin_table();
+  for (uint32_t i = 0; i < bn; i++) {
+    uint32_t off = bt[i] ? V8HeapCompressionScheme::CompressObject(bt[i]) : 0u;
+    fwrite(&off, 4, 1, f);
+  }
+  // Bake the startup object cache (a std::vector populated during startup deser;
+  // context deser indexes into it). Each entry stored smi-flagged like roots.
+  std::vector<Tagged<Object>>* caches[2] = {isolate->startup_object_cache(),
+                                            isolate->shared_heap_object_cache()};
+  for (int ci = 0; ci < 2; ci++) {
+    std::vector<Tagged<Object>>* cache = caches[ci];
+    uint32_t cn = static_cast<uint32_t>(cache->size());
+    fwrite(&cn, 4, 1, f);
+    for (uint32_t i = 0; i < cn; i++) {
+      Tagged<Object> o = (*cache)[i];
+      uint8_t is_smi = IsSmi(o) ? 1 : 0;
+      fwrite(&is_smi, 1, 1, f);
+      if (is_smi) {
+        Address v = o.ptr();
+        fwrite(&v, sizeof(Address), 1, f);
+      } else {
+        uint32_t off = V8HeapCompressionScheme::CompressObject(o.ptr());
+        fwrite(&off, 4, 1, f);
+      }
+    }
+    fprintf(stderr, "[heap-image] cache[%d] = %u entries\n", ci, cn);
+  }
+  fclose(f);
+  fprintf(stderr, "[heap-image] roots -> %s (%u roots, %u builtins)\n", path, n, bn);
+}
+
+void RestoreHeapImageRoots(Isolate* isolate, const char* path) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return;
+  RootsTable& roots = isolate->roots_table();
+  uint32_t n = 0;
+  if (fread(&n, 4, 1, f) != 1) {
+    fclose(f);
+    return;
+  }
+  for (uint32_t i = 0; i < n; i++) {
+    uint8_t is_smi;
+    if (fread(&is_smi, 1, 1, f) != 1) break;
+    if (is_smi) {
+      Address v;
+      if (fread(&v, sizeof(Address), 1, f) != 1) break;
+      roots.slot(static_cast<RootIndex>(i)).store(Tagged<Object>(v));
+    } else {
+      uint32_t off;
+      if (fread(&off, 4, 1, f) != 1) break;
+      Address a =
+          V8HeapCompressionScheme::DecompressTagged(static_cast<Tagged_t>(off));
+      roots.slot(static_cast<RootIndex>(i)).store(Tagged<Object>(a));
+    }
+  }
+  // Restore builtin_table.
+  uint32_t bn = 0;
+  if (fread(&bn, 4, 1, f) == 1) {
+    Address* bt = isolate->builtin_table();
+    for (uint32_t i = 0; i < bn; i++) {
+      uint32_t off;
+      if (fread(&off, 4, 1, f) != 1) break;
+      bt[i] = off ? V8HeapCompressionScheme::DecompressTagged(
+                        static_cast<Tagged_t>(off))
+                  : kNullAddress;
+    }
+  }
+  // Restore startup + shared-heap object caches.
+  std::vector<Tagged<Object>>* caches[2] = {isolate->startup_object_cache(),
+                                            isolate->shared_heap_object_cache()};
+  for (int ci = 0; ci < 2; ci++) {
+    uint32_t cn = 0;
+    if (fread(&cn, 4, 1, f) != 1) break;
+    std::vector<Tagged<Object>>* cache = caches[ci];
+    cache->clear();
+    for (uint32_t i = 0; i < cn; i++) {
+      uint8_t is_smi;
+      if (fread(&is_smi, 1, 1, f) != 1) break;
+      if (is_smi) {
+        Address v;
+        if (fread(&v, sizeof(Address), 1, f) != 1) break;
+        cache->push_back(Tagged<Object>(v));
+      } else {
+        uint32_t off;
+        if (fread(&off, 4, 1, f) != 1) break;
+        if (!HeapImageInRange(off) && HeapImageVerbose()) {
+          static int oob = 0;
+          if (oob++ < 12)
+            fprintf(stderr, "[heap-image] cache[%d][%u] off=%u OUT OF RANGE\n", ci, i,
+                    off);
+        }
+        cache->push_back(Tagged<Object>(V8HeapCompressionScheme::DecompressTagged(
+            static_cast<Tagged_t>(off))));
+      }
+    }
+    if (HeapImageVerbose())
+      fprintf(stderr, "[heap-image] cache[%d] restored %u entries\n", ci, cn);
+  }
+  fclose(f);
+  if (HeapImageVerbose())
+    fprintf(stderr, "[heap-image] roots+builtins+cache restored from %s (%u)\n",
+            path, n);
+}
 
 // A SlotAccessor for a slot in a HeapObject, which abstracts the slot
 // operations done by the deserializer in a way which is GC-safe. In particular,
@@ -276,6 +937,15 @@ int Deserializer<IsolateT>::WriteExternalPointer(Tagged<HeapObject> host,
   }
 #endif  // V8_ENABLE_SANDBOX
 
+  if (HeapDumpEnabled()) {
+    ExtSlotRecs().push_back(ExtSlotRec{
+        static_cast<uint32_t>(
+            V8HeapCompressionScheme::CompressAny(dest.address())),
+        deno_last_ext_ref_id_, deno_last_ext_kind_});
+  }
+  deno_last_ext_ref_id_ = 0xFFFFFFFFu;
+  deno_last_ext_kind_ = 0xFFu;
+
   if (tag == kExternalPointerNullTag && value == kNullAddress) {
     dest.init_lazily_initialized();
   } else {
@@ -325,6 +995,7 @@ Deserializer<IsolateT>::Deserializer(IsolateT* isolate,
       attached_objects_(isolate),
       source_(payload),
       magic_number_(magic_number),
+      read_only_space_(isolate->heap()->read_only_space()),
       new_maps_(isolate),
       new_allocation_sites_(isolate),
       new_instruction_stream_objects_(isolate),
@@ -346,7 +1017,21 @@ Deserializer<IsolateT>::Deserializer(IsolateT* isolate,
   static_assert(kEmptyBackingStoreRefSentinel == 0);
   backing_stores_.push_back({});
 
-  back_refs_.reserve(2048);
+  // Pre-size the back-reference vector. The serializer emits one back-ref
+  // entry for every allocated object, so for large payloads (e.g. user code
+  // caches produced by the TypeScript compiler) the default 2048-entry
+  // reservation triggers multiple geometric reallocations during
+  // deserialization. Use a payload-size hint to skip that. The constant
+  // (~24 bytes per object) is an empirical lower-bound across V8's startup,
+  // context and user-code snapshots; we still bound the reservation so we
+  // don't pre-allocate megabytes for pathologically tiny snapshots.
+  static constexpr size_t kEstimatedBytesPerObject = 24;
+  static constexpr size_t kMinBackRefReservation = 2048;
+  static constexpr size_t kMaxBackRefReservation = 1 << 17;  // 128k entries.
+  const size_t back_ref_hint = std::clamp<size_t>(
+      payload.size() / kEstimatedBytesPerObject, kMinBackRefReservation,
+      kMaxBackRefReservation);
+  back_refs_.reserve(back_ref_hint);
   js_dispatch_entries_.reserve(512);
 
 #ifdef DEBUG
@@ -374,6 +1059,8 @@ Deserializer<IsolateT>::~Deserializer() {
   DCHECK_EQ(num_unresolved_forward_refs_, 0);
   DCHECK(unresolved_forward_refs_.empty());
 #endif  // DEBUG
+  SnapshotScriptDump();
+  SnapshotHistoDump("deser");
   isolate_->RegisterDeserializerFinished();
 }
 
@@ -508,8 +1195,12 @@ void PostProcessExternalString(Tagged<ExternalString> string,
       static_cast<Address>(isolate->api_external_references()[index]);
   string->InitExternalPointerFields(isolate);
   string->set_address_as_resource(isolate, address);
-  isolate->heap()->UpdateExternalString(string, 0,
-                                        string->ExternalPayloadSize());
+  // Heap::UpdateExternalString is a no-op in release builds (only a
+  // DCHECK), so skip both the out-of-line call and the
+  // ExternalPayloadSize() computation that would feed it. This is a hot
+  // path during deserialization of snapshots that contain many external
+  // strings (e.g. TypeScript-style code-cache loads).
+  DCHECK(IsExternalString(string));
   isolate->heap()->RegisterExternalString(string);
 }
 
@@ -603,6 +1294,29 @@ void Deserializer<IsolateT>::PostProcessNewObject(DirectHandle<Map> map,
   DCHECK_EQ(raw_map, obj->map(isolate_));
   InstanceType instance_type = raw_map->instance_type();
   Tagged<HeapObject> raw_obj = *obj;
+  SnapshotHistoRecord(instance_type, raw_obj->Size());
+  if (HeapDumpEnabled()) {
+    HeapDumpRecs().push_back(HeapDumpRec{
+        static_cast<uint32_t>(
+            V8HeapCompressionScheme::CompressObject(raw_obj.ptr())),
+        static_cast<uintptr_t>(raw_obj->address()),
+        static_cast<uint32_t>(raw_obj->Size()),
+        space == SnapshotSpace::kReadOnlyHeap ? uint8_t{1} : uint8_t{0},
+        static_cast<uint16_t>(instance_type),
+        static_cast<uint8_t>(space),
+        static_cast<uint8_t>(
+            HeapObject::RequiredAlignment(kNotInSharedSpace, raw_map))});
+  }
+  if (SnapshotHistoEnabled() &&
+      InstanceTypeChecker::IsScript(instance_type)) {
+    Tagged<Script> scr = Cast<Script>(raw_obj);
+    Tagged<Object> nm = scr->name();
+    if (IsString(nm)) {
+      SnapshotRecordScriptName(
+          Cast<String>(nm),
+          static_cast<int>(scr->infos()->length().value()));
+    }
+  }
   DCHECK_IMPLIES(deserializing_user_code(), should_rehash());
   if (should_rehash()) {
     if (InstanceTypeChecker::IsString(instance_type)) {
@@ -1161,8 +1875,7 @@ int Deserializer<IsolateT>::ReadReadOnlyHeapRef(uint8_t data,
   uint32_t chunk_index = source_.GetUint30();
   uint32_t chunk_offset = source_.GetUint30();
 
-  ReadOnlySpace* read_only_space = isolate()->heap()->read_only_space();
-  ReadOnlyPage* page = read_only_space->pages()[chunk_index];
+  ReadOnlyPage* page = read_only_space_->pages()[chunk_index];
   Address address = page->OffsetToAddress(chunk_offset);
   Tagged<HeapObject> heap_object = HeapObject::FromAddress(address);
 
@@ -1442,6 +2155,8 @@ int Deserializer<IsolateT>::ReadApiReference(uint8_t data,
   if (v8_flags.trace_deserialization) {
     PrintF("%*sApiReference [%" PRIxPTR ", %i]\n", depth_, "", address, tag);
   }
+  deno_last_ext_ref_id_ = reference_id;
+  deno_last_ext_kind_ = 1;
   return WriteExternalPointer(*slot_accessor.object(),
                               slot_accessor.external_pointer_slot(tag), address,
                               tag);
@@ -1663,6 +2378,8 @@ int Deserializer<IsolateT>::ReadFixedRepeatRoot(uint8_t data,
 template <typename IsolateT>
 Address Deserializer<IsolateT>::ReadExternalReferenceCase() {
   uint32_t reference_id = static_cast<uint32_t>(source_.GetUint30());
+  deno_last_ext_ref_id_ = reference_id;
+  deno_last_ext_kind_ = 0;
   return main_thread_isolate()->external_reference_table()->address(
       reference_id);
 }

@@ -10,6 +10,10 @@ namespace v8 {
 namespace internal {
 
 void SharedHeapDeserializer::DeserializeIntoIsolate() {
+  // Heap image: warm restore: shared-heap objects live on the same old-space pages
+  // as startup objects, which the startup whole-page replay adopts. Skip the
+  // normal shared-heap deser so it doesn't double-allocate those pages.
+  if (getenv("DENO_HEAP_IMAGE_RESTORE")) return;
   // Don't deserialize into isolates that don't own their string table. If there
   // are client Isolates, the shared heap object cache should already be
   // populated.
