@@ -1,7 +1,7 @@
 const V8_VERSIONS = [
   "14.9",
   "15.0",
-  "15.3",
+  "15.2",
 ];
 
 const checkVersions = !!Deno.env.get("CHECK_V8_VERSIONS");
