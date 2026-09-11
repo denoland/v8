@@ -1,0 +1,5036 @@
+{
+  "servers": [
+    {
+      "url": "https://api.deno.com"
+    }
+  ],
+  "info": {
+    "title": "Deno Deploy API",
+    "version": "2.0.0",
+    "description": "[Download OpenAPI Spec](./openapi.json)\n\nREST API for managing apps, revisions, layers, and runtime logs on [Deno Deploy](https://deno.com/deploy).\n\n## SDKs\n\n- **Python**: [github.com/denoland/sandbox-py](https://github.com/denoland/sandbox-py)\n- **JavaScript / TypeScript**: [@deno/sandbox on npm](https://www.npmjs.com/package/@deno/sandbox)\n\n## Authentication\n\nAll requests require a Bearer token in the `Authorization` header:\n\n```\nAuthorization: Bearer ddo_your_token_here\n```\n\nOrganization access tokens can be created in the Deno Deploy dashboard under **Settings > Access Tokens**.\n\n## Conventions\n\n- All field names use `snake_case`.\n- Streaming endpoints support both JSONL (`application/x-ndjson`) and SSE (`text/event-stream`). Set the `Accept` header to choose a format.\n\n## Pagination\n\nList endpoints use cursor-based pagination with `cursor` and `limit` query parameters. When more results exist, the response includes a `Link` header with the next page URL:\n\n```\nLink: </v2/apps?cursor=eyJ...>; rel=\"next\"\n```\n\n## Error Responses\n\nAll errors return a consistent JSON body:\n\n```json\n{\n  \"error\": {\n    \"code\": \"ERROR_CODE\",\n    \"message\": \"Human-readable description\"\n  }\n}\n```"
+  },
+  "tags": [
+    {
+      "name": "apps",
+      "description": "An app is the top-level container for a deployable application.\nApps have configuration (build settings, environment variables), can reference layers for shared config, and contain revisions (deployments).\n\n**Key characteristics:**\n\n- Identified by UUID or human-readable slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs.\n- Support up to 5 labels for filtering and grouping\n- Reference layers via `layers` array for inherited configuration\n- Have app-specific `env_vars` that override layer values\n- Have a `config` that provides defaults for revisions"
+    },
+    {
+      "name": "revisions",
+      "description": "A revision represents a specific build and deployment of an app. Revisions are immutable once created — to make changes, you create a new revision. The only mutable property is `retention` (enterprise opt-in), a garbage-collection policy of `auto` or `indefinite`.\n\nStatus lifecycle: `queued` → `building` → `succeeded` (success), `queued` → `failed` (build error, cancelled, or timeout), or `queued` → `skipped`."
+    },
+    {
+      "name": "layers",
+      "description": "A layer is a mutable configuration object that can be shared across multiple apps. Layers provide the solution for bulk environment variable management: instead of updating thousands of apps individually, you create a layer, attach it to apps, then update the layer once.\n\n**Key characteristics:**\n\n- Organization-scoped and identified by ID or slug\n- Contain environment variables\n- Can include other layers (base layers) for hierarchical configuration\n- Apps reference layers in their `layers` array\n- Updating a layer is O(1) regardless of how many apps reference it\n- Layer updates cause running isolates to restart but do not require redeployment"
+    },
+    {
+      "name": "environment variables",
+      "description": "Environment variables can be set on layers, apps, and revisions. They support **context filtering**, allowing different values per deployment context (e.g., `production`, `preview`, `build`).\n\n## Resolution Order\n\nResolution order (later overrides earlier):\n\n1. Organization-wide env vars\n2. App's layer env vars (flattened, in `layers` array order)\n3. App-specific env vars\n4. Revision's layer env vars (flattened, in `layers` array order)\n5. Revision-specific env vars\n\nWithin each layer level (2 and 4), later entries in the `layers` array override earlier ones. When a layer includes base layers, those bases are resolved depth-first, then the including layer's own env vars take precedence. For example, if `app.layers` is `[X]` and layer X includes `[A, B]`, the resolution within level 2 is: A → B → X (X's own vars win).\n\n> **Note:** The current implementation uses a different resolution order where app-level env vars (levels 3–5) take precedence over revision-level env vars (levels 1–2). We plan to align the implementation with the documented order above in a future update.\n\n## Updating\n\nWhen updating via PATCH, `env_vars` performs a **deep merge**: match by `id`, or by `key`+`contexts`, or create new. Set `delete: true` to remove."
+    },
+    {
+      "name": "domains",
+      "description": "A domain is a hostname (apex or wildcard) owned by an organization. Once registered, a domain must be verified via a DNS-published `_acme-challenge.<domain>` token, then receives a TLS certificate (uploaded manually or provisioned via ACME).\n\n**Lifecycle:**\n\n1. `POST /domains` — register the domain and receive the DNS records to publish.\n2. `POST /domains/{domainId}/verify` — re-runs DNS verification once records propagate.\n3. Either `POST /domains/{domainId}/certificates` (manual) or `POST /domains/{domainId}/certificates/provision` (automatic ACME).\n4. Attach to revisions via deploy or per-revision endpoints."
+    },
+    {
+      "name": "databases",
+      "description": "Create database instances (BYO Postgres, Deno KV, Prisma) and bind the manual databases hosted on them. Manual databases are bound to one of an app's timelines (`production`, `preview`, etc.) and coexist with the per-timeline databases provisioned by default. Use the deploy endpoint's `databases` parameter to bind a specific manual database to an individual revision without affecting other revisions on the timeline."
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Bearer token authentication",
+        "type": "http",
+        "scheme": "Bearer",
+        "bearerFormat": "string"
+      }
+    },
+    "schemas": {
+      "Labels": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "examples": [
+          {
+            "custom.customer_id": "cust_123",
+            "custom.environment": "production",
+            "custom.regions": [
+              "us-east",
+              "eu-west"
+            ]
+          }
+        ]
+      },
+      "EnvVar": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the environment variable"
+          },
+          "key": {
+            "type": "string",
+            "description": "The environment variable name"
+          },
+          "value": {
+            "type": "string",
+            "description": "The value. Omitted when `secret` is true"
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "Whether the value is masked in API responses"
+          },
+          "contexts": {
+            "anyOf": [
+              {
+                "const": "all"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "Deployment contexts this variable applies to. `\"all\"` means every context."
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "secret",
+          "contexts"
+        ],
+        "examples": [
+          {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "key": "DATABASE_URL",
+            "value": "postgres://localhost/dev",
+            "secret": false,
+            "contexts": "all"
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "key": "API_SECRET",
+            "secret": true,
+            "contexts": "all"
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "key": "CACHE_TTL",
+            "value": "3600",
+            "secret": false,
+            "contexts": [
+              "production"
+            ]
+          }
+        ]
+      },
+      "EnvVarInput": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "The environment variable name"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 65536,
+            "description": "The environment variable value"
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "Whether to mask the value in API responses. Defaults to false"
+          },
+          "contexts": {
+            "anyOf": [
+              {
+                "const": "all"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "Deployment contexts this variable applies to. Defaults to `\"all\"`."
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "examples": [
+          {
+            "key": "DATABASE_URL",
+            "value": "postgres://localhost/dev"
+          },
+          {
+            "key": "API_SECRET",
+            "value": "sk-xxx",
+            "secret": true
+          },
+          {
+            "key": "CACHE_TTL",
+            "value": "3600",
+            "contexts": [
+              "production"
+            ]
+          }
+        ]
+      },
+      "EnvVarInputForDeploy": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "The environment variable name"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 65536,
+            "description": "The environment variable value"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "examples": [
+          {
+            "key": "DATABASE_URL",
+            "value": "postgres://localhost/dev"
+          }
+        ]
+      },
+      "RevisionEnvVar": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The environment variable name"
+          },
+          "value": {
+            "type": "string",
+            "description": "The environment variable value"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "examples": [
+          {
+            "key": "DATABASE_URL",
+            "value": "postgres://localhost/dev"
+          }
+        ]
+      },
+      "EnvVarUpdate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID of the existing variable to update or delete"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Variable name. Used for matching when `id` is not provided"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 65536,
+            "description": "New value for the variable"
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "Whether to mask the value in API responses"
+          },
+          "contexts": {
+            "anyOf": [
+              {
+                "const": "all"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "Deployment contexts this variable applies to"
+          },
+          "delete": {
+            "type": "boolean",
+            "description": "Set to true to remove this variable"
+          }
+        },
+        "examples": [
+          {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "value": "postgres://prod-host/db"
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "delete": true
+          },
+          {
+            "key": "NEW_VAR",
+            "value": "new-value"
+          }
+        ]
+      },
+      "LayerRefInput": {
+        "anyOf": [
+          {
+            "type": "string",
+            "description": "Layer ID to reference"
+          },
+          {
+            "type": "string",
+            "description": "Layer slug to reference"
+          }
+        ]
+      },
+      "LayerRef": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique layer identifier"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Human-readable layer slug"
+          }
+        },
+        "required": [
+          "id",
+          "slug"
+        ],
+        "examples": [
+          {
+            "id": "lyr_abc123",
+            "slug": "shared-secrets"
+          }
+        ]
+      },
+      "Runtime": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "enum": [
+              "dynamic",
+              "static"
+            ],
+            "description": "`dynamic` runs a Deno process; `static` serves pre-built files"
+          },
+          "entrypoint": {
+            "type": "string",
+            "description": "Main module path. Required when `type` is `dynamic`"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional CLI arguments passed to the entrypoint"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory or static file root. Required when `type` is `static`"
+          },
+          "spa": {
+            "type": "boolean",
+            "description": "Enable single-page application mode (fallback to index.html). Only for `static` type"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "Config": {
+        "type": "object",
+        "properties": {
+          "framework": {
+            "enum": [
+              "",
+              "nextjs",
+              "astro",
+              "nuxt",
+              "remix",
+              "solidstart",
+              "tanstackstart",
+              "sveltekit",
+              "fresh",
+              "lume"
+            ],
+            "description": "Framework preset. Mutually exclusive with `runtime`"
+          },
+          "install": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Custom install command. Omit to skip the install step"
+          },
+          "build": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Custom build command. Omit to skip the build step"
+          },
+          "predeploy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Command to run before each deployment (e.g. database migrations). Omit to skip"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/Runtime",
+            "description": "Runtime configuration. Mutually exclusive with `framework`"
+          },
+          "crons": {
+            "type": "boolean",
+            "description": "Whether cron jobs are enabled for revisions of the app. When false, revisions that register cron jobs using Deno.cron fail to build. Defaults to true"
+          }
+        },
+        "examples": [
+          {
+            "framework": "nextjs",
+            "install": "npm install",
+            "build": "npm run build"
+          },
+          {
+            "runtime": {
+              "type": "dynamic",
+              "entrypoint": "main.ts"
+            }
+          },
+          {
+            "runtime": {
+              "type": "static",
+              "cwd": "./dist",
+              "spa": true
+            }
+          }
+        ]
+      },
+      "ConfigOutput": {
+        "type": "object",
+        "properties": {
+          "framework": {
+            "enum": [
+              "",
+              "nextjs",
+              "astro",
+              "nuxt",
+              "remix",
+              "solidstart",
+              "tanstackstart",
+              "sveltekit",
+              "fresh",
+              "lume"
+            ],
+            "description": "Framework preset used for this build"
+          },
+          "install": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Install command. Null if skipped"
+          },
+          "build": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Build command. Null if skipped"
+          },
+          "predeploy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pre-deploy command. Null if skipped"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/Runtime",
+            "description": "Runtime configuration"
+          },
+          "crons": {
+            "type": "boolean",
+            "description": "Whether cron jobs are enabled for revisions of the app. When false, revisions that register cron jobs using Deno.cron fail to build. Defaults to true"
+          }
+        }
+      },
+      "Asset": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "file",
+                "default": "file",
+                "description": "Asset type discriminator"
+              },
+              "encoding": {
+                "enum": [
+                  "utf-8",
+                  "base64"
+                ],
+                "default": "utf-8",
+                "description": "Content encoding"
+              },
+              "content": {
+                "type": "string",
+                "description": "File content, encoded according to `encoding`"
+              }
+            },
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "symlink",
+                "description": "Asset type discriminator"
+              },
+              "target": {
+                "type": "string",
+                "description": "Relative path to the symlink target"
+              }
+            },
+            "required": [
+              "kind",
+              "target"
+            ]
+          }
+        ],
+        "examples": [
+          {
+            "kind": "file",
+            "encoding": "utf-8",
+            "content": "Deno.serve(() => new Response(\"Hello\"));"
+          },
+          {
+            "kind": "file",
+            "encoding": "base64",
+            "content": "aGVsbG8="
+          },
+          {
+            "kind": "symlink",
+            "target": "./main.ts"
+          }
+        ]
+      },
+      "Assets": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "$ref": "#/components/schemas/Asset"
+        },
+        "examples": [
+          {
+            "main.ts": {
+              "kind": "file",
+              "encoding": "utf-8",
+              "content": "Deno.serve(() => new Response(\"Hello\"));"
+            },
+            "deno.json": {
+              "kind": "file",
+              "encoding": "utf-8",
+              "content": "{\"imports\": {}}"
+            }
+          }
+        ]
+      },
+      "Partition": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "type": "string"
+        },
+        "examples": [
+          {
+            "git.branch": "main"
+          }
+        ]
+      },
+      "BuildStep": {
+        "enum": [
+          "preparing",
+          "installing",
+          "building",
+          "deploying"
+        ]
+      },
+      "BuildLogEntry": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of the log entry"
+          },
+          "level": {
+            "enum": [
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ],
+            "description": "Log severity level"
+          },
+          "message": {
+            "type": "string",
+            "description": "Log message content"
+          },
+          "step": {
+            "$ref": "#/components/schemas/BuildStep",
+            "description": "Build step that produced this log (e.g. `preparing`, `installing`, `building`)"
+          },
+          "timeline": {
+            "type": "string",
+            "description": "Timeline slug, if the log is associated with a specific timeline"
+          }
+        },
+        "required": [
+          "timestamp",
+          "level",
+          "message"
+        ],
+        "examples": [
+          {
+            "timestamp": "2024-01-15T10:30:05Z",
+            "level": "info",
+            "message": "Starting build...",
+            "step": "preparing"
+          },
+          {
+            "timestamp": "2024-01-15T10:30:20Z",
+            "level": "error",
+            "message": "Failed to resolve module 'foo'",
+            "step": "installing"
+          }
+        ]
+      },
+      "RevisionProgress": {
+        "type": "object",
+        "properties": {
+          "queued": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "pending",
+                    "description": "Stage has not started yet"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "skipped",
+                    "description": "Stage was skipped"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "running",
+                    "description": "Stage is currently running"
+                  },
+                  "start": {
+                    "type": "string",
+                    "description": "ISO 8601 timestamp when the stage started"
+                  }
+                },
+                "required": [
+                  "status",
+                  "start"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "succeeded",
+                      "timed_out",
+                      "cancelled",
+                      "errored"
+                    ],
+                    "description": "Terminal stage status"
+                  },
+                  "start": {
+                    "type": "string",
+                    "description": "ISO 8601 timestamp when the stage started"
+                  },
+                  "end": {
+                    "type": "string",
+                    "description": "ISO 8601 timestamp when the stage ended"
+                  }
+                },
+                "required": [
+                  "status",
+                  "start",
+                  "end"
+                ]
+              }
+            ],
+            "description": "Queue stage — waiting for a build slot"
+          },
+          "preparing": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "pending",
+                    "description": "Stage has not started yet"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "skipped",
+                    "description": "Stage was skipped"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "running",
+                    "description": "Stage is currently running"
+                  },
+                  "start": {
+                    "type": "string",
+                    "description": "ISO 8601 timestamp when the stage started"
+                  }
+                },
+                "required": [
+                  "status",
+                  "start"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "succeeded",
+                      "timed_out",
+                      "cancelled",
+                      "errored"
+                    ],
+                    "description": "Terminal stage status"
+                  },
+                  "start": {
+                    "type": "string",
+                    "description": "ISO 8601 timestamp when the stage started"
+                  },
+                  "end": {
+                    "type": "string",
+                    "description": "ISO 8601 timestamp when the stage ended"
+                  }
+                },
+                "required": [
+                  "status",
+                  "start",
+                  "end"
+                ]
+              }
+            ],
+            "description": "Prepare stage — cloning source code and restoring caches"
+          },
+          "installing": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "pending",
+                        "description": "Stage has not started yet"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "skipped",
+                        "description": "Stage was skipped"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "running",
+                        "description": "Stage is currently running"
+                      },
+                      "start": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage started"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "start"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "succeeded",
+                          "timed_out",
+                          "cancelled",
+                          "errored"
+                        ],
+                        "description": "Terminal stage status"
+                      },
+                      "start": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage started"
+                      },
+                      "end": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage ended"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "start",
+                      "end"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The command being executed, or null if not applicable"
+                  }
+                },
+                "required": [
+                  "command"
+                ]
+              }
+            ],
+            "description": "Install stage — installing dependencies"
+          },
+          "building": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "pending",
+                        "description": "Stage has not started yet"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "skipped",
+                        "description": "Stage was skipped"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "running",
+                        "description": "Stage is currently running"
+                      },
+                      "start": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage started"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "start"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "succeeded",
+                          "timed_out",
+                          "cancelled",
+                          "errored"
+                        ],
+                        "description": "Terminal stage status"
+                      },
+                      "start": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage started"
+                      },
+                      "end": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage ended"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "start",
+                      "end"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The command being executed, or null if not applicable"
+                  }
+                },
+                "required": [
+                  "command"
+                ]
+              }
+            ],
+            "description": "Build stage — running the build command"
+          },
+          "deploying": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "pending",
+                        "description": "Stage has not started yet"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "skipped",
+                        "description": "Stage was skipped"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "const": "running",
+                        "description": "Stage is currently running"
+                      },
+                      "start": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage started"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "start"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "succeeded",
+                          "timed_out",
+                          "cancelled",
+                          "errored"
+                        ],
+                        "description": "Terminal stage status"
+                      },
+                      "start": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage started"
+                      },
+                      "end": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the stage ended"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "start",
+                      "end"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "timelines": {
+                    "type": "array",
+                    "items": {
+                      "allOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "const": "pending",
+                                  "description": "Stage has not started yet"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "const": "skipped",
+                                  "description": "Stage was skipped"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "const": "running",
+                                  "description": "Stage is currently running"
+                                },
+                                "start": {
+                                  "type": "string",
+                                  "description": "ISO 8601 timestamp when the stage started"
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "start"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "enum": [
+                                    "succeeded",
+                                    "timed_out",
+                                    "cancelled",
+                                    "errored"
+                                  ],
+                                  "description": "Terminal stage status"
+                                },
+                                "start": {
+                                  "type": "string",
+                                  "description": "ISO 8601 timestamp when the stage started"
+                                },
+                                "end": {
+                                  "type": "string",
+                                  "description": "ISO 8601 timestamp when the stage ended"
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "start",
+                                "end"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "slug": {
+                              "type": "string",
+                              "description": "Timeline slug"
+                            },
+                            "partition": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "examples": [
+                                {
+                                  "git.branch": "main"
+                                }
+                              ],
+                              "description": "Partition key-value pairs identifying this timeline"
+                            },
+                            "databases": {
+                              "type": "array",
+                              "items": {
+                                "allOf": [
+                                  {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "status": {
+                                            "const": "pending",
+                                            "description": "Stage has not started yet"
+                                          }
+                                        },
+                                        "required": [
+                                          "status"
+                                        ]
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "status": {
+                                            "const": "skipped",
+                                            "description": "Stage was skipped"
+                                          }
+                                        },
+                                        "required": [
+                                          "status"
+                                        ]
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "status": {
+                                            "const": "running",
+                                            "description": "Stage is currently running"
+                                          },
+                                          "start": {
+                                            "type": "string",
+                                            "description": "ISO 8601 timestamp when the stage started"
+                                          }
+                                        },
+                                        "required": [
+                                          "status",
+                                          "start"
+                                        ]
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "status": {
+                                            "enum": [
+                                              "succeeded",
+                                              "timed_out",
+                                              "cancelled",
+                                              "errored"
+                                            ],
+                                            "description": "Terminal stage status"
+                                          },
+                                          "start": {
+                                            "type": "string",
+                                            "description": "ISO 8601 timestamp when the stage started"
+                                          },
+                                          "end": {
+                                            "type": "string",
+                                            "description": "ISO 8601 timestamp when the stage ended"
+                                          }
+                                        },
+                                        "required": [
+                                          "status",
+                                          "start",
+                                          "end"
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "engine": {
+                                        "type": "string",
+                                        "description": "Database engine type (e.g. postgresql, denokv)"
+                                      }
+                                    },
+                                    "required": [
+                                      "engine"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "description": "Per-database provisioning progress"
+                            },
+                            "predeploy": {
+                              "allOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "const": "pending",
+                                          "description": "Stage has not started yet"
+                                        }
+                                      },
+                                      "required": [
+                                        "status"
+                                      ]
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "const": "skipped",
+                                          "description": "Stage was skipped"
+                                        }
+                                      },
+                                      "required": [
+                                        "status"
+                                      ]
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "const": "running",
+                                          "description": "Stage is currently running"
+                                        },
+                                        "start": {
+                                          "type": "string",
+                                          "description": "ISO 8601 timestamp when the stage started"
+                                        }
+                                      },
+                                      "required": [
+                                        "status",
+                                        "start"
+                                      ]
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "enum": [
+                                            "succeeded",
+                                            "timed_out",
+                                            "cancelled",
+                                            "errored"
+                                          ],
+                                          "description": "Terminal stage status"
+                                        },
+                                        "start": {
+                                          "type": "string",
+                                          "description": "ISO 8601 timestamp when the stage started"
+                                        },
+                                        "end": {
+                                          "type": "string",
+                                          "description": "ISO 8601 timestamp when the stage ended"
+                                        }
+                                      },
+                                      "required": [
+                                        "status",
+                                        "start",
+                                        "end"
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "command": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "description": "The command being executed, or null if not applicable"
+                                    }
+                                  },
+                                  "required": [
+                                    "command"
+                                  ]
+                                }
+                              ],
+                              "description": "Pre-deploy command stage progress"
+                            },
+                            "warmup": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "status": {
+                                      "const": "pending",
+                                      "description": "Stage has not started yet"
+                                    }
+                                  },
+                                  "required": [
+                                    "status"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "status": {
+                                      "const": "skipped",
+                                      "description": "Stage was skipped"
+                                    }
+                                  },
+                                  "required": [
+                                    "status"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "status": {
+                                      "const": "running",
+                                      "description": "Stage is currently running"
+                                    },
+                                    "start": {
+                                      "type": "string",
+                                      "description": "ISO 8601 timestamp when the stage started"
+                                    }
+                                  },
+                                  "required": [
+                                    "status",
+                                    "start"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "status": {
+                                      "enum": [
+                                        "succeeded",
+                                        "timed_out",
+                                        "cancelled",
+                                        "errored"
+                                      ],
+                                      "description": "Terminal stage status"
+                                    },
+                                    "start": {
+                                      "type": "string",
+                                      "description": "ISO 8601 timestamp when the stage started"
+                                    },
+                                    "end": {
+                                      "type": "string",
+                                      "description": "ISO 8601 timestamp when the stage ended"
+                                    }
+                                  },
+                                  "required": [
+                                    "status",
+                                    "start",
+                                    "end"
+                                  ]
+                                }
+                              ],
+                              "description": "Isolate warmup stage progress"
+                            },
+                            "routing": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "const": "pending",
+                                          "description": "Stage has not started yet"
+                                        }
+                                      },
+                                      "required": [
+                                        "status"
+                                      ]
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "const": "skipped",
+                                          "description": "Stage was skipped"
+                                        }
+                                      },
+                                      "required": [
+                                        "status"
+                                      ]
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "const": "running",
+                                          "description": "Stage is currently running"
+                                        },
+                                        "start": {
+                                          "type": "string",
+                                          "description": "ISO 8601 timestamp when the stage started"
+                                        }
+                                      },
+                                      "required": [
+                                        "status",
+                                        "start"
+                                      ]
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "status": {
+                                          "enum": [
+                                            "succeeded",
+                                            "timed_out",
+                                            "cancelled",
+                                            "errored"
+                                          ],
+                                          "description": "Terminal stage status"
+                                        },
+                                        "start": {
+                                          "type": "string",
+                                          "description": "ISO 8601 timestamp when the stage started"
+                                        },
+                                        "end": {
+                                          "type": "string",
+                                          "description": "ISO 8601 timestamp when the stage ended"
+                                        }
+                                      },
+                                      "required": [
+                                        "status",
+                                        "start",
+                                        "end"
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "status": {
+                                      "const": "timeline_blocked",
+                                      "description": "Routing is blocked waiting for other timelines"
+                                    },
+                                    "timelines": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "slug": {
+                                            "type": "string",
+                                            "description": "Timeline slug"
+                                          },
+                                          "partition": {
+                                            "type": "object",
+                                            "propertyNames": {},
+                                            "additionalProperties": {},
+                                            "examples": [
+                                              {
+                                                "git.branch": "main"
+                                              }
+                                            ],
+                                            "description": "Partition key-value pairs identifying this timeline"
+                                          }
+                                        },
+                                        "required": [
+                                          "slug",
+                                          "partition"
+                                        ]
+                                      },
+                                      "description": "Timelines that are blocking this stage"
+                                    },
+                                    "stage": {
+                                      "const": "warmup",
+                                      "description": "The stage that is blocked"
+                                    }
+                                  },
+                                  "required": [
+                                    "status",
+                                    "timelines",
+                                    "stage"
+                                  ]
+                                }
+                              ],
+                              "description": "Domain routing stage progress"
+                            }
+                          },
+                          "required": [
+                            "slug",
+                            "partition",
+                            "databases",
+                            "predeploy",
+                            "routing"
+                          ]
+                        }
+                      ]
+                    },
+                    "description": "Per-timeline deployment progress"
+                  }
+                },
+                "required": [
+                  "timelines"
+                ]
+              }
+            ],
+            "description": "Deploy stage — uploading artifacts and routing traffic"
+          }
+        },
+        "required": [
+          "queued",
+          "preparing",
+          "installing",
+          "building",
+          "deploying"
+        ],
+        "examples": [
+          {
+            "queued": {
+              "status": "succeeded",
+              "start": "2025-01-01T00:00:00Z",
+              "end": "2025-01-01T00:00:01Z"
+            },
+            "preparing": {
+              "status": "succeeded",
+              "start": "2025-01-01T00:00:01Z",
+              "end": "2025-01-01T00:00:05Z"
+            },
+            "installing": {
+              "status": "succeeded",
+              "start": "2025-01-01T00:00:05Z",
+              "end": "2025-01-01T00:00:10Z",
+              "command": null
+            },
+            "building": {
+              "status": "succeeded",
+              "start": "2025-01-01T00:00:10Z",
+              "end": "2025-01-01T00:00:20Z",
+              "command": "deno task build"
+            },
+            "deploying": {
+              "status": "succeeded",
+              "start": "2025-01-01T00:00:20Z",
+              "end": "2025-01-01T00:00:25Z",
+              "timelines": [
+                {
+                  "status": "succeeded",
+                  "start": "2025-01-01T00:00:20Z",
+                  "end": "2025-01-01T00:00:25Z",
+                  "slug": "production",
+                  "partition": {},
+                  "databases": [
+                    {
+                      "status": "succeeded",
+                      "start": "2025-01-01T00:00:20Z",
+                      "end": "2025-01-01T00:00:22Z",
+                      "engine": "postgresql"
+                    },
+                    {
+                      "status": "succeeded",
+                      "start": "2025-01-01T00:00:20Z",
+                      "end": "2025-01-01T00:00:21Z",
+                      "engine": "denokv"
+                    }
+                  ],
+                  "predeploy": {
+                    "status": "succeeded",
+                    "start": "2025-01-01T00:00:22Z",
+                    "end": "2025-01-01T00:00:23Z",
+                    "command": "deno task db:migrate"
+                  },
+                  "routing": {
+                    "status": "succeeded",
+                    "start": "2025-01-01T00:00:23Z",
+                    "end": "2025-01-01T00:00:25Z"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "RuntimeLog": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of the log entry"
+          },
+          "level": {
+            "enum": [
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ],
+            "description": "Log severity level"
+          },
+          "message": {
+            "type": "string",
+            "description": "Log message content"
+          },
+          "revision_id": {
+            "type": "string",
+            "description": "Revision that produced this log entry"
+          },
+          "region": {
+            "type": "string",
+            "description": "Region where the isolate was running"
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "OpenTelemetry trace ID for request correlation"
+          },
+          "span_id": {
+            "type": "string",
+            "description": "OpenTelemetry span ID"
+          }
+        },
+        "required": [
+          "timestamp",
+          "level",
+          "message"
+        ],
+        "examples": [
+          {
+            "timestamp": "2024-01-15T10:30:00.123Z",
+            "level": "info",
+            "message": "Handling request",
+            "revision_id": "r2ysnrrhr352",
+            "region": "us-east-1",
+            "trace_id": "abc123def456",
+            "span_id": "span789"
+          }
+        ]
+      },
+      "RuntimeLogsResponse": {
+        "type": "object",
+        "properties": {
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeLog"
+            },
+            "description": "Array of log entries"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cursor for fetching the next page, or null if no more results"
+          }
+        },
+        "required": [
+          "logs",
+          "next_cursor"
+        ],
+        "examples": [
+          {
+            "logs": [
+              {
+                "timestamp": "2024-01-15T10:30:00.123Z",
+                "level": "info",
+                "message": "Handling request",
+                "revision_id": "r2ysnrrhr352",
+                "region": "us-east-1"
+              },
+              {
+                "timestamp": "2024-01-15T10:30:00.456Z",
+                "level": "error",
+                "message": "Database connection failed",
+                "revision_id": "r2ysnrrhr352",
+                "region": "us-east-1"
+              }
+            ],
+            "next_cursor": "eyJsYXN0X3RpbWVzdGFtcCI6..."
+          }
+        ]
+      },
+      "AnalyticsResponse": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Field name. The current Phase 1 response returns: time, request_count, cpu_seconds, runtime_seconds, memory_time_byte_seconds, network_ingress_bytes, network_egress_bytes, kv_read_units, and kv_write_units. Future responses may include additional fields."
+                },
+                "type": {
+                  "enum": [
+                    "time",
+                    "number"
+                  ],
+                  "description": "Field value type."
+                }
+              },
+              "required": [
+                "name",
+                "type"
+              ]
+            },
+            "description": "Analytics table fields. The current Phase 1 response returns these fields: time, request_count, cpu_seconds, runtime_seconds, memory_time_byte_seconds, network_ingress_bytes, network_egress_bytes, kv_read_units, and kv_write_units. Clients should map row values by field name instead of column position; future responses may include additional fields."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "description": "Per-bucket analytics rows. The first column is the bucket start time."
+          }
+        },
+        "required": [
+          "fields",
+          "values"
+        ],
+        "examples": [
+          {
+            "fields": [
+              {
+                "name": "time",
+                "type": "time"
+              },
+              {
+                "name": "request_count",
+                "type": "number"
+              },
+              {
+                "name": "cpu_seconds",
+                "type": "number"
+              },
+              {
+                "name": "runtime_seconds",
+                "type": "number"
+              },
+              {
+                "name": "memory_time_byte_seconds",
+                "type": "number"
+              },
+              {
+                "name": "network_ingress_bytes",
+                "type": "number"
+              },
+              {
+                "name": "network_egress_bytes",
+                "type": "number"
+              },
+              {
+                "name": "kv_read_units",
+                "type": "number"
+              },
+              {
+                "name": "kv_write_units",
+                "type": "number"
+              }
+            ],
+            "values": [
+              [
+                "2026-06-01T00:00:00Z",
+                1200,
+                43.12,
+                900,
+                966367641600,
+                10485760,
+                20971520,
+                900,
+                126
+              ]
+            ]
+          }
+        ]
+      },
+      "RevisionFailureDetail": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string",
+            "description": "Deployment stage that failed. Currently always \"warmup\" — the post-build boot check of the deployed application. New stages may be added; clients must tolerate unknown values."
+          },
+          "code": {
+            "type": "string",
+            "description": "Machine-readable failure code. Currently \"boot_failed\" (the deployed application failed to start — check the application logs for the startup error) or \"internal\" (a platform-side failure). New codes may be added; clients must tolerate unknown values."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable description of the failure"
+          }
+        },
+        "required": [
+          "stage",
+          "code",
+          "message"
+        ]
+      },
+      "App": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique app identifier (UUID)"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Human-readable app slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug."
+          },
+          "labels": {
+            "$ref": "#/components/schemas/Labels",
+            "description": "User-defined key-value labels for filtering and grouping"
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LayerRef"
+            },
+            "description": "Layers referenced by this app, in priority order (later overrides earlier)"
+          },
+          "env_vars": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvVar"
+            },
+            "description": "App-specific environment variables"
+          },
+          "config": {
+            "$ref": "#/components/schemas/ConfigOutput",
+            "description": "Default build and runtime configuration for new revisions"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of last modification"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "layers",
+          "updated_at",
+          "created_at"
+        ],
+        "examples": [
+          {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "slug": "my-customer-app",
+            "labels": {
+              "custom.customer_id": "cust_123",
+              "custom.environment": "production"
+            },
+            "layers": [
+              {
+                "id": "lyr_abc123",
+                "slug": "shared-secrets"
+              }
+            ],
+            "env_vars": [
+              {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "key": "APP_NAME",
+                "value": "My Customer App",
+                "secret": false,
+                "contexts": "all"
+              }
+            ],
+            "config": {
+              "framework": "nextjs",
+              "install": "npm install",
+              "build": "npm run build"
+            },
+            "created_at": "2024-01-15T10:30:00Z",
+            "updated_at": "2024-01-15T10:30:00Z"
+          }
+        ]
+      },
+      "AppListItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique app identifier (UUID)"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Human-readable app slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug."
+          },
+          "labels": {
+            "$ref": "#/components/schemas/Labels",
+            "description": "User-defined key-value labels"
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LayerRef"
+            },
+            "description": "Layers referenced by this app, in priority order (later overrides earlier)"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of last modification"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "layers",
+          "updated_at",
+          "created_at"
+        ]
+      },
+      "RevisionTimeline": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Timeline name — the partition config the revision is deployed under (e.g. \"Production\", \"Preview\", \"Production (pinned)\")"
+          },
+          "context": {
+            "type": "string",
+            "description": "Name of the context (environment variable group) this timeline runs in"
+          },
+          "hostnames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hostnames on this timeline that currently route to this revision. A hostname only appears while this revision is the one actually serving it: hostnames shadowed by a newer revision under latest-revision-wins routing — including the default production hostname once a newer revision takes over the production timeline — are omitted."
+          }
+        },
+        "required": [
+          "name",
+          "context",
+          "hostnames"
+        ]
+      },
+      "Revision": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique revision identifier"
+          },
+          "status": {
+            "enum": [
+              "skipped",
+              "queued",
+              "building",
+              "succeeded",
+              "failed"
+            ],
+            "description": "Current revision lifecycle status"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "error",
+                  "cancelled",
+                  "timed_out",
+                  "skipped"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reason for failure, or null if not failed"
+          },
+          "failure_detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RevisionFailureDetail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured detail for a deployment that failed after a successful build (e.g. the application failed to start during warmup), or null. Build failures and cancellations do not carry this detail."
+          },
+          "labels": {
+            "$ref": "#/components/schemas/Labels",
+            "description": "Metadata labels attached to this revision (e.g. git info)"
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LayerRef"
+            },
+            "description": "Layers referenced by this revision, in priority order (later overrides earlier)"
+          },
+          "env_vars": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RevisionEnvVar"
+            },
+            "description": "Revision-specific environment variables (immutable once created)"
+          },
+          "config": {
+            "$ref": "#/components/schemas/ConfigOutput",
+            "description": "Build and runtime configuration used for this revision"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          },
+          "cancellation_requested_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 timestamp when cancellation was requested, or null"
+          },
+          "build_finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 timestamp when the build completed, or null if still building"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 timestamp of deletion, or null if active"
+          },
+          "retention": {
+            "enum": [
+              "auto",
+              "indefinite"
+            ],
+            "description": "Garbage-collection policy for this revision. `auto` follows the normal inactivity-based cleanup; `indefinite` exempts the revision from automatic deletion. Only available to enterprise organizations that have opted in to revision retention — contact Deno support to enable it. Absent for organizations without the feature, which cannot set it. Retention only guards against automatic deletion: explicitly deleting the revision, or deleting its app, always succeeds regardless."
+          },
+          "timelines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RevisionTimeline"
+            },
+            "description": "Timelines this revision is part of, each with the hostnames that currently route to this revision on that timeline"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "failure_reason",
+          "failure_detail",
+          "layers",
+          "env_vars",
+          "created_at",
+          "cancellation_requested_at",
+          "build_finished_at",
+          "deleted_at",
+          "timelines"
+        ],
+        "examples": [
+          {
+            "id": "r2ysnrrhr352",
+            "status": "succeeded",
+            "failure_reason": null,
+            "failure_detail": null,
+            "labels": {
+              "custom.branch": "main",
+              "custom.sha": "abc123def456"
+            },
+            "layers": [
+              {
+                "id": "lyr_abc123",
+                "slug": "deployment-secrets"
+              }
+            ],
+            "env_vars": [
+              {
+                "key": "BUILD_ID",
+                "value": "abc123"
+              }
+            ],
+            "config": {
+              "framework": "fresh",
+              "install": "deno cache main.ts"
+            },
+            "created_at": "2024-01-15T10:30:00Z",
+            "cancellation_requested_at": null,
+            "build_finished_at": "2024-01-15T10:31:50Z",
+            "deleted_at": null,
+            "timelines": [
+              {
+                "name": "Production",
+                "context": "Production",
+                "hostnames": [
+                  "my-app.my-org.deno.net"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "r2ysnrrhr352",
+            "status": "failed",
+            "failure_reason": "error",
+            "failure_detail": {
+              "stage": "warmup",
+              "code": "boot_failed",
+              "message": "The application failed to start. Check the application logs for this revision for the startup error."
+            },
+            "labels": {
+              "custom.branch": "main"
+            },
+            "layers": [],
+            "env_vars": [],
+            "config": {
+              "framework": "fresh"
+            },
+            "created_at": "2024-01-15T10:30:00Z",
+            "cancellation_requested_at": null,
+            "build_finished_at": "2024-01-15T10:32:00Z",
+            "deleted_at": null,
+            "timelines": []
+          }
+        ]
+      },
+      "RevisionListItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique revision identifier"
+          },
+          "status": {
+            "enum": [
+              "skipped",
+              "queued",
+              "building",
+              "succeeded",
+              "failed"
+            ],
+            "description": "Current revision lifecycle status"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "error",
+                  "cancelled",
+                  "timed_out",
+                  "skipped"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reason for failure, or null if not failed"
+          },
+          "labels": {
+            "$ref": "#/components/schemas/Labels",
+            "description": "Metadata labels attached to this revision"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          },
+          "cancellation_requested_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 timestamp when cancellation was requested, or null"
+          },
+          "build_finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 timestamp when the build completed, or null if still building"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 timestamp of deletion, or null if active"
+          },
+          "retention": {
+            "enum": [
+              "auto",
+              "indefinite"
+            ],
+            "description": "Garbage-collection policy (`auto` or `indefinite`). Only present for enterprise organizations opted in to revision retention."
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "failure_reason",
+          "created_at",
+          "cancellation_requested_at",
+          "build_finished_at",
+          "deleted_at"
+        ]
+      },
+      "Timeline": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "Timeline slug derived from the partition config name"
+          },
+          "partition": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            },
+            "examples": [
+              {
+                "git.branch": "main"
+              }
+            ],
+            "description": "Partition key-value pairs identifying this timeline"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "domain": {
+                  "type": "string",
+                  "description": "Domain name assigned to this timeline"
+                }
+              },
+              "required": [
+                "domain"
+              ]
+            },
+            "description": "Domains routed to this timeline"
+          }
+        },
+        "required": [
+          "slug",
+          "partition",
+          "domains"
+        ]
+      },
+      "Layer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique layer identifier"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Human-readable layer slug"
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional description of the layer's purpose"
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LayerRef"
+            },
+            "description": "Base layers included by this layer, in priority order (later overrides earlier). The including layer's own env vars take precedence over all its bases"
+          },
+          "env_vars": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvVar"
+            },
+            "description": "Environment variables defined in this layer"
+          },
+          "app_count": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991,
+            "description": "Number of apps that reference this layer"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of last modification"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "layers",
+          "env_vars",
+          "app_count",
+          "created_at",
+          "updated_at"
+        ],
+        "examples": [
+          {
+            "id": "lyr_abc123",
+            "slug": "shared-secrets",
+            "description": "Common API keys and secrets for all customer apps",
+            "layers": [
+              {
+                "id": "lyr_base123",
+                "slug": "base-config"
+              }
+            ],
+            "env_vars": [
+              {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "key": "DATABASE_URL",
+                "value": "postgres://host/db",
+                "secret": false,
+                "contexts": "all"
+              },
+              {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "key": "API_SECRET",
+                "secret": true,
+                "contexts": "all"
+              }
+            ],
+            "app_count": 42,
+            "created_at": "2024-01-15T10:30:00Z",
+            "updated_at": "2024-01-15T10:30:00Z"
+          }
+        ]
+      },
+      "LayerAppRef": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique app identifier (UUID)"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Human-readable app slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug."
+          },
+          "layer_position": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991,
+            "description": "Index of this layer in the app's `layers` array"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "layer_position"
+        ],
+        "examples": [
+          {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "slug": "customer-app-1",
+            "layer_position": 0
+          }
+        ]
+      },
+      "DomainKind": {
+        "enum": [
+          "base_only",
+          "wildcard_only",
+          "base_and_wildcard"
+        ]
+      },
+      "DnsRecord": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "DNS record name (e.g. `@` for apex, or a subdomain label)"
+          },
+          "base": {
+            "type": "string",
+            "description": "Apex zone the record belongs to"
+          },
+          "type": {
+            "type": "string",
+            "description": "DNS record type (e.g. `CNAME`, `A`)"
+          },
+          "value": {
+            "type": "string",
+            "description": "Target value (hostname, IP, etc.)"
+          }
+        },
+        "required": [
+          "name",
+          "base",
+          "type",
+          "value"
+        ]
+      },
+      "ProvisioningStatus": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "enum": [
+              "success",
+              "failed",
+              "pending",
+              "manual"
+            ],
+            "description": "Aggregate state of the most recent TLS provisioning attempt."
+          },
+          "message": {
+            "type": "string",
+            "description": "Non-internal error detail when `code` is `failed`"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "DomainCertificate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Certificate identifier"
+          },
+          "kind": {
+            "enum": [
+              "automatic",
+              "manual"
+            ],
+            "description": "`automatic` for ACME-provisioned certificates, `manual` for user-uploaded ones"
+          },
+          "subject_alt_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "All hostnames covered by this certificate"
+          },
+          "private_key_algorithm": {
+            "enum": [
+              "ec-p256",
+              "ec-p384",
+              "ec-p521",
+              "rsa-2048",
+              "rsa-3072",
+              "rsa-4096"
+            ],
+            "description": "Private key algorithm"
+          },
+          "not_valid_before": {
+            "type": "string",
+            "description": "ISO 8601 start of validity window"
+          },
+          "not_valid_after": {
+            "type": "string",
+            "description": "ISO 8601 end of validity window"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of when the certificate was stored"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "subject_alt_names",
+          "private_key_algorithm",
+          "not_valid_before",
+          "not_valid_after",
+          "created_at"
+        ]
+      },
+      "Domain": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique domain identifier (UUID)"
+          },
+          "organization_id": {
+            "type": "string",
+            "description": "Organization that owns the domain"
+          },
+          "domain": {
+            "type": "string",
+            "description": "The bare hostname (e.g. `shop.acme.com`). Wildcard coverage is reported via `kind`, never as a `*.` literal in this field."
+          },
+          "kind": {
+            "enum": [
+              "base_only",
+              "wildcard_only",
+              "base_and_wildcard"
+            ],
+            "description": "Whether the domain covers the apex, a wildcard, or both"
+          },
+          "verification_token": {
+            "type": "string",
+            "description": "Token to publish under `_acme-challenge.<domain>` for ownership verification"
+          },
+          "is_validated": {
+            "type": "boolean",
+            "description": "True once DNS-based ownership has been confirmed"
+          },
+          "dns_records": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DnsRecord"
+              }
+            },
+            "description": "Alternative sets of DNS records to publish for verification and routing. Each inner array is one complete, self-sufficient option — publish every record from a single option (e.g. the `CNAME` option *or* the `A`/`AAAA` option), not a mix across options. The `_acme-challenge` verification record is required regardless of the option chosen, so it is included in every option."
+          },
+          "provisioning_status": {
+            "$ref": "#/components/schemas/ProvisioningStatus"
+          },
+          "certificates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DomainCertificate"
+            },
+            "description": "Currently stored certificates for this domain"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of last modification"
+          }
+        },
+        "required": [
+          "id",
+          "organization_id",
+          "domain",
+          "kind",
+          "verification_token",
+          "is_validated",
+          "dns_records",
+          "provisioning_status",
+          "certificates",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "DomainInit": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string",
+            "description": "Bare hostname to register, e.g. `shop.acme.com` — without a `*.` prefix. Wildcard coverage is selected via `kind`, not by putting a `*` label in the hostname."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DomainKind",
+            "description": "Whether the domain covers the apex, a wildcard, or both. Defaults to `base_only`. To serve `*.preview.acme.com`, register `preview.acme.com` with `wildcard_only` (wildcard subdomains only) or `base_and_wildcard` (apex plus wildcard)."
+          }
+        },
+        "required": [
+          "domain"
+        ]
+      },
+      "CertificateUpload": {
+        "type": "object",
+        "properties": {
+          "certificate": {
+            "type": "string",
+            "minLength": 1,
+            "description": "PEM-encoded certificate (full chain)"
+          },
+          "private_key": {
+            "type": "string",
+            "minLength": 1,
+            "description": "PEM-encoded private key matching the certificate"
+          }
+        },
+        "required": [
+          "certificate",
+          "private_key"
+        ]
+      },
+      "DeployDatabaseRef": {
+        "type": "object",
+        "properties": {
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Database instance ID or slug holding the target database"
+          },
+          "name": {
+            "type": "string",
+            "description": "Literal name of the database to bind. Must not contain `{` or `}` placeholders"
+          }
+        },
+        "required": [
+          "instance",
+          "name"
+        ]
+      },
+      "ProductionTarget": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "domains": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Hostnames to bind to this revision under the production timeline. Every entry must fall under a domain your organization has already verified — either the verified domain itself (an apex hostname such as `my-domain.com` bound against the verified `my-domain.com`) or a subdomain of a verified wildcard domain (such as `my-app.my-org.deno.net` bound against the verified `*.my-org.deno.net`). A hostname that does not fall under any verified domain is rejected. The leading label of a subdomain may contain `{variable}` template expressions so the hostname resolves to a distinct value per revision. Template variables may appear only in the first label, may be combined with static text and with each other (e.g. `pr-{deno.revision.id}` or `{deno.app.slug}--{deno.revision.id}`), and must not contain a dot. The available variables are `{deno.revision.id}`, `{deno.app.slug}` (or its opaque equivalent `{deno.app.id}`), and `{deno.organization.id}`. A hostname always resolves to exactly one revision: binding is additive, but when a hostname is bound to multiple revisions the most recently created revision wins. To roll a hostname back to an older revision you must explicitly detach the newer revision(s) via `DELETE /revisions/{revision}/domains/{hostname}`."
+              },
+              "databases": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/components/schemas/DeployDatabaseRef"
+                },
+                "description": "Databases to bind to this revision under the production timeline. Each entry references a database by `{instance, name}`; the underlying `database_templates` row is created on first use and reused across subsequent deploys. Only this revision is added to the set of revisions bound to each database — other revisions on the same timeline are unaffected. At most two databases may be bound, and a two-database binding must pair exactly one Deno KV database with one non-KV database. Omit the key to leave the timeline's database bindings untouched; pass `[]` to bind nothing."
+              }
+            }
+          }
+        ]
+      },
+      "PreviewTarget": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "domains": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Hostnames to bind to this revision under the preview timeline. Every entry must fall under a domain your organization has already verified — either the verified domain itself (an apex hostname such as `my-domain.com` bound against the verified `my-domain.com`) or a subdomain of a verified wildcard domain (such as `my-app.my-org.deno.net` bound against the verified `*.my-org.deno.net`). A hostname that does not fall under any verified domain is rejected. The leading label of a subdomain may contain `{variable}` template expressions so the hostname resolves to a distinct value per revision. Template variables may appear only in the first label, may be combined with static text and with each other (e.g. `pr-{deno.revision.id}` or `{deno.app.slug}--{deno.revision.id}`), and must not contain a dot. The available variables are `{deno.revision.id}`, `{deno.app.slug}` (or its opaque equivalent `{deno.app.id}`), and `{deno.organization.id}`. A hostname always resolves to exactly one revision: binding is additive, but when a hostname is bound to multiple revisions the most recently created revision wins. To roll a hostname back to an older revision you must explicitly detach the newer revision(s) via `DELETE /revisions/{revision}/domains/{hostname}`."
+              },
+              "databases": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/components/schemas/DeployDatabaseRef"
+                },
+                "description": "Databases to bind to this revision under the preview timeline. Each entry references a database by `{instance, name}`; the underlying `database_templates` row is created on first use and reused across subsequent deploys. Only this revision is added to the set of revisions bound to each database — other revisions on the same timeline are unaffected. At most two databases may be bound, and a two-database binding must pair exactly one Deno KV database with one non-KV database. Omit the key to leave the timeline's database bindings untouched; pass `[]` to bind nothing."
+              }
+            }
+          }
+        ]
+      },
+      "DeployDomains": {
+        "type": "object",
+        "properties": {
+          "production": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Hostnames to bind to this revision under the production timeline. Every entry must fall under a domain your organization has already verified — either the verified domain itself (an apex hostname such as `my-domain.com` bound against the verified `my-domain.com`) or a subdomain of a verified wildcard domain (such as `my-app.my-org.deno.net` bound against the verified `*.my-org.deno.net`). A hostname that does not fall under any verified domain is rejected. The leading label of a subdomain may contain `{variable}` template expressions so the hostname resolves to a distinct value per revision. Template variables may appear only in the first label, may be combined with static text and with each other (e.g. `pr-{deno.revision.id}` or `{deno.app.slug}--{deno.revision.id}`), and must not contain a dot. The available variables are `{deno.revision.id}`, `{deno.app.slug}` (or its opaque equivalent `{deno.app.id}`), and `{deno.organization.id}`. A hostname always resolves to exactly one revision: binding is additive, but when a hostname is bound to multiple revisions the most recently created revision wins. To roll a hostname back to an older revision you must explicitly detach the newer revision(s) via `DELETE /revisions/{revision}/domains/{hostname}`."
+          },
+          "preview": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Hostnames to bind to this revision under the preview timeline. Every entry must fall under a domain your organization has already verified — either the verified domain itself (an apex hostname such as `my-domain.com` bound against the verified `my-domain.com`) or a subdomain of a verified wildcard domain (such as `my-app.my-org.deno.net` bound against the verified `*.my-org.deno.net`). A hostname that does not fall under any verified domain is rejected. The leading label of a subdomain may contain `{variable}` template expressions so the hostname resolves to a distinct value per revision. Template variables may appear only in the first label, may be combined with static text and with each other (e.g. `pr-{deno.revision.id}` or `{deno.app.slug}--{deno.revision.id}`), and must not contain a dot. The available variables are `{deno.revision.id}`, `{deno.app.slug}` (or its opaque equivalent `{deno.app.id}`), and `{deno.organization.id}`. A hostname always resolves to exactly one revision: binding is additive, but when a hostname is bound to multiple revisions the most recently created revision wins. To roll a hostname back to an older revision you must explicitly detach the newer revision(s) via `DELETE /revisions/{revision}/domains/{hostname}`."
+          }
+        }
+      },
+      "DatabaseInstanceConnection": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "engine": {
+                "const": "postgresql"
+              },
+              "hostname": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Database server hostname"
+              },
+              "port": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Database server port"
+              },
+              "username": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Username for authentication"
+              },
+              "custom_certificate": {
+                "type": "boolean",
+                "description": "Whether a custom CA certificate is configured"
+              }
+            },
+            "required": [
+              "engine",
+              "hostname",
+              "port",
+              "username",
+              "custom_certificate"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "engine": {
+                "const": "denokv"
+              }
+            },
+            "required": [
+              "engine"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "engine": {
+                "const": "prisma"
+              },
+              "project_id": {
+                "type": "string",
+                "description": "Prisma project identifier"
+              },
+              "region": {
+                "type": "string",
+                "description": "Prisma project region"
+              }
+            },
+            "required": [
+              "engine",
+              "project_id",
+              "region"
+            ]
+          }
+        ]
+      },
+      "DatabaseTimeline": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "object",
+            "properties": {
+              "slug": {
+                "type": "string",
+                "description": "App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug."
+              }
+            },
+            "required": [
+              "slug"
+            ],
+            "description": "The app the timeline belongs to"
+          },
+          "timeline": {
+            "type": "string",
+            "description": "Timeline slug derived from the partition config name (e.g. `production`)"
+          },
+          "partition": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            },
+            "examples": [
+              {
+                "git.branch": "main"
+              }
+            ],
+            "description": "Partition key-value pairs identifying the timeline"
+          }
+        },
+        "required": [
+          "app",
+          "timeline",
+          "partition"
+        ]
+      },
+      "Database": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Literal database name"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "creating",
+              "ready",
+              "failed",
+              "deleted"
+            ],
+            "description": "Provisioning status of the database"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          },
+          "timelines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DatabaseTimeline"
+            },
+            "description": "Timelines this database is bound to"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "created_at",
+          "timelines"
+        ]
+      },
+      "DatabaseInstance": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique database instance identifier"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Human-readable instance slug"
+          },
+          "engine": {
+            "enum": [
+              "postgresql",
+              "denokv",
+              "prisma"
+            ],
+            "description": "Database engine type"
+          },
+          "connection": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "postgresql"
+                  },
+                  "hostname": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Database server hostname"
+                  },
+                  "port": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Database server port"
+                  },
+                  "username": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Username for authentication"
+                  },
+                  "custom_certificate": {
+                    "type": "boolean",
+                    "description": "Whether a custom CA certificate is configured"
+                  }
+                },
+                "required": [
+                  "engine",
+                  "hostname",
+                  "port",
+                  "username",
+                  "custom_certificate"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "denokv"
+                  }
+                },
+                "required": [
+                  "engine"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "prisma"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Prisma project identifier"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "Prisma project region"
+                  }
+                },
+                "required": [
+                  "engine",
+                  "project_id",
+                  "region"
+                ]
+              }
+            ],
+            "description": "Non-sensitive connection metadata. Credentials are never returned"
+          },
+          "databases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Database"
+            },
+            "description": "Databases that exist on this instance"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of creation"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "engine",
+          "connection",
+          "databases",
+          "created_at"
+        ]
+      },
+      "DatabaseInstanceInit": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "Slug for the new database instance"
+          },
+          "connection": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "postgresql"
+                  },
+                  "hostname": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Database server hostname"
+                  },
+                  "port": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Database server port"
+                  },
+                  "username": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Username for authentication"
+                  },
+                  "password": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Password for authentication"
+                  },
+                  "certificate": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Custom CA certificate (PEM). Omit to use the bundled AWS RDS CA bundle"
+                  }
+                },
+                "required": [
+                  "engine",
+                  "hostname",
+                  "port",
+                  "username",
+                  "password",
+                  "certificate"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "denokv"
+                  }
+                },
+                "required": [
+                  "engine"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "prisma"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "Prisma project region"
+                  }
+                },
+                "required": [
+                  "engine",
+                  "region"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "slug",
+          "connection"
+        ]
+      }
+    }
+  },
+  "openapi": "3.1.1",
+  "paths": {
+    "/v2/apps/{app}": {
+      "get": {
+        "operationId": "apps.get",
+        "summary": "Get app details",
+        "description": "Get detailed information about an app, including labels, layers, environment variables, and config.",
+        "tags": [
+          "apps"
+        ],
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The app ID or slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "apps.update",
+        "summary": "Update app",
+        "description": "All fields are optional. `labels` and `layers` replace the entire value. `env_vars` performs a deep merge with existing variables. `config` replaces the entire deploy config (no deep merge).\n\nUpdating `layers` or `env_vars` will restart running isolates.",
+        "tags": [
+          "apps"
+        ],
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The app ID or slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "New app slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug."
+                  },
+                  "labels": {
+                    "$ref": "#/components/schemas/Labels",
+                    "description": "Replace all labels"
+                  },
+                  "layers": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/LayerRefInput"
+                    },
+                    "description": "Replace all layer references"
+                  },
+                  "env_vars": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EnvVarUpdate"
+                    },
+                    "description": "Deep merge with existing environment variables"
+                  },
+                  "config": {
+                    "$ref": "#/components/schemas/Config",
+                    "description": "Replace the entire deploy config"
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "apps.delete",
+        "summary": "Delete app",
+        "description": "Delete an app and all its revisions.",
+        "tags": [
+          "apps"
+        ],
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The app ID or slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v2/apps": {
+      "get": {
+        "operationId": "apps.list",
+        "summary": "List apps",
+        "description": "List apps with optional filtering by labels or layer.\n\nUse `labels[key]=value` query parameters to filter by label values. Use `layer` to filter apps that reference a specific layer.",
+        "tags": [
+          "apps"
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The pagination cursor"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The maximum number of items to return"
+          },
+          {
+            "name": "labels",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/Labels",
+              "description": "Filter by labels"
+            },
+            "style": "deepObject",
+            "explode": true,
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Filter by labels (e.g. `labels[key]=value`)"
+          },
+          {
+            "name": "layer",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "style": "deepObject",
+            "explode": true,
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Layer ID or slug. Slugs cannot contain underscores; IDs always do."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AppListItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "apps.create",
+        "summary": "Create app",
+        "description": "Apps can reference layers for shared configuration, have app-specific environment variables, and a config that provides defaults for revisions.",
+        "tags": [
+          "apps"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "App slug. If omitted, a random slug is generated. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug."
+                  },
+                  "labels": {
+                    "$ref": "#/components/schemas/Labels",
+                    "description": "Key-value labels for filtering and grouping (max 5)"
+                  },
+                  "layers": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/LayerRefInput"
+                    },
+                    "description": "Layers to reference for inherited configuration"
+                  },
+                  "env_vars": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EnvVarInput"
+                    },
+                    "description": "App-specific environment variables"
+                  },
+                  "config": {
+                    "$ref": "#/components/schemas/Config",
+                    "description": "Default build and runtime configuration"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/deploy": {
+      "post": {
+        "operationId": "apps.deploy",
+        "summary": "Create revision",
+        "description": "Create a new revision (deployment).\n\nUpload source files as assets and optionally specify `config`, `layers`, `env_vars`, and `labels`. Asset keys are relative paths resolved against `/app/src`.\n\nIf `config` is omitted, it is inherited from the app's config. If specified, it fully replaces the app's config (no deep merge).\n\nRevision `env_vars` are immutable once created and have highest priority in the resolution order. Context filtering is not supported for revision env vars.\n\nUse `production` and `preview` to control which timelines the revision is deployed to. By default, revisions are deployed to the production timeline only.",
+        "tags": [
+          "apps"
+        ],
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The app ID or slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "assets": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "$ref": "#/components/schemas/Asset"
+                    },
+                    "examples": [
+                      {
+                        "main.ts": {
+                          "kind": "file",
+                          "encoding": "utf-8",
+                          "content": "Deno.serve(() => new Response(\"Hello\"));"
+                        },
+                        "deno.json": {
+                          "kind": "file",
+                          "encoding": "utf-8",
+                          "content": "{\"imports\": {}}"
+                        }
+                      }
+                    ],
+                    "description": "Source files to deploy. Keys are paths relative to `/app/src`"
+                  },
+                  "config": {
+                    "$ref": "#/components/schemas/Config",
+                    "description": "Build and runtime config. If omitted, inherited from the app"
+                  },
+                  "layers": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/LayerRefInput"
+                    },
+                    "description": "Layers to reference for this revision"
+                  },
+                  "env_vars": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EnvVarInputForDeploy"
+                    },
+                    "description": "Revision-specific environment variables (immutable once created)"
+                  },
+                  "labels": {
+                    "$ref": "#/components/schemas/Labels",
+                    "description": "Metadata labels (e.g. git branch, commit SHA)"
+                  },
+                  "production": {
+                    "$ref": "#/components/schemas/ProductionTarget",
+                    "default": true,
+                    "description": "Whether and how to deploy to the production timeline. `true` (the default) or `{}` joins production with default wiring — the default `<app>.<org>` alias floats to this revision. `false` keeps it out of production. `{ \"domains\": [...] }` enters explicit mode: only the listed hostnames are bound (each pinned to this revision), and the default alias is attached only if you list it explicitly as `{deno.app.slug}.<org>.<base>`. `{ \"domains\": [] }` attaches nothing. `{ \"databases\": [{ \"instance\": \"...\", \"name\": \"...\" }] }` binds the listed databases under the Production partition_config (materialised on first use). `domains` and `databases` may be combined."
+                  },
+                  "preview": {
+                    "$ref": "#/components/schemas/PreviewTarget",
+                    "default": false,
+                    "description": "Whether and how to deploy to the preview timeline. `true` or `{}` joins preview with the default per-revision preview URL. `false` (the default) keeps it out. `{ \"domains\": [...] }` binds only the listed hostnames (each pinned to this revision). `{ \"databases\": [{ \"instance\": \"...\", \"name\": \"...\" }] }` binds the listed databases under the Preview partition_config."
+                  },
+                  "retention": {
+                    "enum": [
+                      "auto",
+                      "indefinite"
+                    ],
+                    "default": "auto",
+                    "description": "Garbage-collection policy for the new revision. `auto` (the default) follows the normal inactivity-based cleanup; `indefinite` exempts it from automatic deletion. `indefinite` is only available to enterprise organizations that have opted in to revision retention — contact Deno support to enable it. For organizations without the feature, a deploy that sets `indefinite` fails with `403 REVISION_RETENTION_NOT_AVAILABLE`."
+                  }
+                },
+                "required": [
+                  "assets"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Revision"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/analytics": {
+      "get": {
+        "operationId": "apps.analytics",
+        "summary": "Get app analytics",
+        "description": "Get fixed app-scoped usage analytics in a Deploy Classic-style table envelope.\n\nThe response contains only `fields` and `values`. The current Phase 1 response returns these fields: `time`, `request_count`, `cpu_seconds`, `runtime_seconds`, `memory_time_byte_seconds`, `network_ingress_bytes`, `network_egress_bytes`, `kv_read_units`, and `kv_write_units`. Clients should map row values by `fields[].name` instead of column position; future responses may include additional fields. Buckets are fixed 15-minute UTC buckets, and only buckets fully contained in the effective `[since, until)` range are returned. Recent buckets may be delayed or updated as telemetry is ingested, and missing rollup rows inside the returned range are zero-filled. Data is available from the analytics rollup rollout time onward and is not invoice-authoritative billing data.",
+        "tags": [
+          "apps"
+        ],
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The app ID or slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs."
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "minLength": 1
+            },
+            "allowReserved": true,
+            "description": "Inclusive lower bound as a non-empty RFC 3339 timestamp"
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "minLength": 1
+            },
+            "allowReserved": true,
+            "description": "Exclusive upper bound as a non-empty RFC 3339 timestamp"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/logs": {
+      "get": {
+        "operationId": "apps.logs",
+        "summary": "Get or stream logs",
+        "description": "Query historical runtime logs, or stream them using Server-Sent Events or JSONL.\n\nWhen `end` is specified, returns paginated JSON.\nWhen `end` is omitted, streams logs in real-time using SSE or JSONL.\n\nRequesting `Accept: application/json` without `end` will return an error.",
+        "tags": [
+          "apps"
+        ],
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The app ID or slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs."
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Start of the time range (ISO 8601)"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Start of the time range (ISO 8601)"
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "End of the time range (ISO 8601). If omitted, logs are streamed in real-time"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "End of the time range (ISO 8601). If omitted, logs are streamed in real-time"
+          },
+          {
+            "name": "revision_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Filter logs by revision ID"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Filter logs by revision ID"
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "debug",
+                "info",
+                "warn",
+                "error"
+              ],
+              "description": "Minimum log severity level"
+            },
+            "style": "deepObject",
+            "explode": true,
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Minimum log severity level"
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Full-text search query"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Full-text search query"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The pagination cursor"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The maximum number of items to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeLogsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}": {
+      "get": {
+        "operationId": "revisions.get",
+        "summary": "Get revision details",
+        "description": "Get revision details.\n\nRevision IDs are globally unique. The response includes `layers`, `env_vars`, and `config` when available.\n\nStatus lifecycle (one of):\n- queued -> building -> succeeded (success)\n- queued -> failed (build error, cancelled, or timeout)\n- queued -> skipped (e.g., commit message contains [skip-ci])\n\nThe `timelines` field is an eventually consistent view of routing: after a deploy or a domain change it may briefly reflect the previous state (typically for a few seconds at most).",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Revision"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "revisions.update",
+        "summary": "Update revision",
+        "description": "Update mutable revision properties. The only mutable property is `retention`, the revision's garbage-collection policy: `auto` follows the normal inactivity-based cleanup, while `indefinite` exempts the revision from automatic deletion so it keeps serving on its preview and pinned-production domains. Explicitly deleting the revision, or deleting its app, is always permitted regardless of `retention`.\n\n`indefinite` is only available to enterprise organizations that have opted in — contact Deno support to enable it. For organizations without the feature, requests that set `indefinite` fail with `403 REVISION_RETENTION_NOT_AVAILABLE`.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "retention": {
+                    "enum": [
+                      "auto",
+                      "indefinite"
+                    ],
+                    "description": "The revision's garbage-collection policy (`auto` or `indefinite`)"
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Revision"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "revisions.delete",
+        "summary": "Delete revision",
+        "description": "Delete a revision. Cannot delete revisions that are currently building or actively routed.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}/cancel": {
+      "post": {
+        "operationId": "revisions.cancel",
+        "summary": "Cancel revision build",
+        "description": "Request cancellation of a build in progress. Cancellation is asynchronous — this endpoint returns immediately with the current revision state. The `cancellation_requested_at` field will be set, but the revision may still be in `building` status. Poll the revision or use the [/progress](#tag/revisions/GET/api/v2/revisions/{revision}/progress) endpoint to wait for the build to reach the `failed` state with `failure_reason: \"cancelled\"`.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Revision"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/revisions": {
+      "get": {
+        "operationId": "revisions.list",
+        "summary": "List revisions for app",
+        "description": "List revisions for an app. Optionally filter by status.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The app ID or slug. App slugs must be 3–32 characters long, may contain only lowercase letters, numbers, and hyphens, cannot contain underscores, must not start or end with a hyphen, must not have consecutive hyphens in positions 3 and 4, and cannot be a reserved slug. App IDs are UUIDs."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The pagination cursor"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The maximum number of items to return"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "skipped",
+                "queued",
+                "building",
+                "succeeded",
+                "failed"
+              ],
+              "description": "Filter revisions by status"
+            },
+            "style": "deepObject",
+            "explode": true,
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Filter by revision status"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RevisionListItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}/progress": {
+      "get": {
+        "operationId": "revisions.progress",
+        "summary": "Stream revision progress",
+        "description": "Stream revision build progress. The stream ends when the revision\nreaches a terminal state (`succeeded`, `failed`, or `skipped`).\n\nSupports both JSONL (`Accept: application/x-ndjson`) and SSE (`Accept: text/event-stream`)\nformats via the `Accept` header.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "event": {
+                          "const": "message"
+                        },
+                        "data": {
+                          "$ref": "#/components/schemas/RevisionProgress"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "retry": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "event",
+                        "data"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "event": {
+                          "const": "done"
+                        },
+                        "data": {},
+                        "id": {
+                          "type": "string"
+                        },
+                        "retry": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "event"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "event": {
+                          "const": "error"
+                        },
+                        "data": {},
+                        "id": {
+                          "type": "string"
+                        },
+                        "retry": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "event"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionProgress"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}/build_logs": {
+      "get": {
+        "operationId": "revisions.build_logs",
+        "summary": "Stream build logs",
+        "description": "Stream build logs for a revision.\n\nSupports both Server-Sent Events (SSE) (`Accept: text/event-stream`) and JSON Lines (`Accept: application/x-ndjson`) formats. Use the `Accept` header to specify the desired format.\n\nThe stream remains open during active builds and closes when the build completes.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "preparing",
+                "installing",
+                "building",
+                "deploying"
+              ],
+              "description": "Filter logs by build step"
+            },
+            "style": "deepObject",
+            "explode": true,
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Filter logs by build step"
+          },
+          {
+            "name": "timeline",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Filter logs by timeline slug"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "Filter logs by timeline slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "event": {
+                          "const": "message"
+                        },
+                        "data": {
+                          "$ref": "#/components/schemas/BuildLogEntry"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "retry": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "event",
+                        "data"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "event": {
+                          "const": "done"
+                        },
+                        "data": {},
+                        "id": {
+                          "type": "string"
+                        },
+                        "retry": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "event"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "event": {
+                          "const": "error"
+                        },
+                        "data": {},
+                        "id": {
+                          "type": "string"
+                        },
+                        "retry": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "event"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuildLogEntry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}/timelines": {
+      "get": {
+        "operationId": "revisions.timelines",
+        "summary": "Get revision timelines",
+        "description": "Get the timelines (deployment targets) where this revision is active.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Timeline"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}/domains": {
+      "put": {
+        "operationId": "revisions.attachDomain",
+        "summary": "Attach domains to a revision",
+        "description": "Bind domains to this revision. Bindings are scoped to this revision only — other revisions keep their existing routing.\n\nEach hostname must fall under a domain your organization has already verified, following the same rule and `{variable}` template syntax as the `domains` field on `POST /apps/{app}/deploy` (see its `production`/`preview` documentation).\n\nYou can also (re-)attach this revision to the app's **default** managed domains post-deployment by listing the default-alias template — the same value `POST /apps/{app}/deploy` accepts (e.g. `{deno.app.slug}.<org>.<managed-domain>` under `production`, or the per-revision `{deno.app.slug}-{deno.revision.id}.…` under `preview`). Listing it sets the timeline label on the revision rather than pinning a custom hostname: the default production host floats to the **latest** revision attached this way, while each revision keeps its own default preview host.\n\nBinding the same hostname to this revision again is a no-op. Use `DELETE /revisions/{revision}/domains/{hostname}` to remove a binding.\n\nA hostname always resolves to **exactly one** revision. Binding is additive: attaching a hostname to a revision never detaches it from any revision it is already bound to. When a hostname is bound to several revisions, the **most recently created revision wins**.\n\nBecause the newest bound revision always wins, moving a hostname *forward* to a newer revision is just an attach: bind it to the newer revision and that revision immediately takes over routing — you do not detach the old one. Moving a hostname *back* to an older revision is different: re-attaching the older revision has no effect while a newer revision is still bound, so you must explicitly `DELETE` the binding on every newer revision. Detaching the currently-winning revision falls back to the next most recently created revision that is still bound; the hostname only stops routing once its last binding is removed.\n\nReturns `204 No Content` on success.",
+        "tags": [
+          "revisions",
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "production": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": "Hostnames to bind to this revision under the production timeline. Every entry must fall under a domain your organization has already verified — either the verified domain itself (an apex hostname such as `my-domain.com` bound against the verified `my-domain.com`) or a subdomain of a verified wildcard domain (such as `my-app.my-org.deno.net` bound against the verified `*.my-org.deno.net`). A hostname that does not fall under any verified domain is rejected. The leading label of a subdomain may contain `{variable}` template expressions so the hostname resolves to a distinct value per revision. Template variables may appear only in the first label, may be combined with static text and with each other (e.g. `pr-{deno.revision.id}` or `{deno.app.slug}--{deno.revision.id}`), and must not contain a dot. The available variables are `{deno.revision.id}`, `{deno.app.slug}` (or its opaque equivalent `{deno.app.id}`), and `{deno.organization.id}`. A hostname always resolves to exactly one revision: binding is additive, but when a hostname is bound to multiple revisions the most recently created revision wins. To roll a hostname back to an older revision you must explicitly detach the newer revision(s) via `DELETE /revisions/{revision}/domains/{hostname}`."
+                  },
+                  "preview": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": "Hostnames to bind to this revision under the preview timeline. Every entry must fall under a domain your organization has already verified — either the verified domain itself (an apex hostname such as `my-domain.com` bound against the verified `my-domain.com`) or a subdomain of a verified wildcard domain (such as `my-app.my-org.deno.net` bound against the verified `*.my-org.deno.net`). A hostname that does not fall under any verified domain is rejected. The leading label of a subdomain may contain `{variable}` template expressions so the hostname resolves to a distinct value per revision. Template variables may appear only in the first label, may be combined with static text and with each other (e.g. `pr-{deno.revision.id}` or `{deno.app.slug}--{deno.revision.id}`), and must not contain a dot. The available variables are `{deno.revision.id}`, `{deno.app.slug}` (or its opaque equivalent `{deno.app.id}`), and `{deno.organization.id}`. A hostname always resolves to exactly one revision: binding is additive, but when a hostname is bound to multiple revisions the most recently created revision wins. To roll a hostname back to an older revision you must explicitly detach the newer revision(s) via `DELETE /revisions/{revision}/domains/{hostname}`."
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}/domains/{hostname}": {
+      "delete": {
+        "operationId": "revisions.detachDomain",
+        "summary": "Detach a domain from a revision",
+        "description": "Remove this revision's binding for the given hostname. Hostnames are unique, so the binding is identified by hostname alone — the timeline/context is inferred. Pass the same hostname (including any `{variable}` template syntax) that was used to attach it.\n\nPassing a **default**-alias template detaches the revision from the app's default managed domain instead of removing a custom binding: the default production host rolls back to the next most recently attached revision, and the default preview host for this revision goes offline.\n\nDetaching one hostname leaves the revision's other hostnames untouched, even when they share a parent domain. Other revisions and app-level custom-domain assignments are not affected. Returns `404` if no binding exists.",
+        "tags": [
+          "revisions",
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          },
+          {
+            "name": "hostname",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v2/revisions/{revision}/promote": {
+      "post": {
+        "operationId": "revisions.promote",
+        "summary": "Promote a revision to production",
+        "description": "Make this already-built revision the live production revision without rebuilding. Pins the app's default production timeline to this revision (joining the timeline first if needed), so the default managed production host — and any custom domains assigned to the app's production timeline — route to it, and it runs with the production context's environment variables and databases.\n\nThis differs from attaching the default production alias via `PUT /revisions/{revision}/domains`: that only marks the revision as a production *member* and lets the **newest** member serve, whereas this **pins this specific** revision, so it serves even when it is older than another production revision. To undo, promote a different revision (re-pins) or remove the production override.\n\nThe revision must be built (status `routed`). Returns `204 No Content`.",
+        "tags": [
+          "revisions"
+        ],
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Revision ID (globally unique)"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v2/layers": {
+      "post": {
+        "operationId": "layers.create",
+        "summary": "Create layer",
+        "description": "Create a new layer.",
+        "tags": [
+          "layers"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Human-readable layer slug"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Optional description of the layer's purpose"
+                  },
+                  "layers": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/LayerRefInput"
+                    },
+                    "description": "Other layers to include for hierarchical configuration"
+                  },
+                  "env_vars": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EnvVarInput"
+                    },
+                    "description": "Environment variables for this layer"
+                  }
+                },
+                "required": [
+                  "slug"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Layer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "layers.list",
+        "summary": "List layers",
+        "description": "List all layers in the organization.",
+        "tags": [
+          "layers"
+        ],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The search query for filtering"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The pagination cursor"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The maximum number of items to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Layer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/layers/{layer}": {
+      "get": {
+        "operationId": "layers.get",
+        "summary": "Get layer",
+        "description": "Get a layer by ID or slug.\n\nSlugs cannot contain underscores; IDs always do.",
+        "tags": [
+          "layers"
+        ],
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Layer ID or slug. Slugs cannot contain underscores; IDs always do."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Layer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "layers.update",
+        "summary": "Update layer",
+        "description": "Update a layer. This is the key operation for bulk environment variable updates.\n\nAll fields are optional. `env_vars` performs a deep merge with existing variables: update by ID, update by key+contexts match, or create new. Set `delete: true` to remove a variable.\n\nRunning isolates will restart to pick up the new configuration.",
+        "tags": [
+          "layers"
+        ],
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Layer ID or slug. Slugs cannot contain underscores; IDs always do."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "New layer slug"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "New description"
+                  },
+                  "layers": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/LayerRefInput"
+                    },
+                    "description": "Replace all included layers"
+                  },
+                  "env_vars": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EnvVarUpdate"
+                    },
+                    "description": "Deep merge with existing environment variables"
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Layer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "layers.delete",
+        "summary": "Delete layer",
+        "description": "Returns 409 Conflict if apps still reference this layer.",
+        "tags": [
+          "layers"
+        ],
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Layer ID or slug. Slugs cannot contain underscores; IDs always do."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v2/layers/{layer}/apps": {
+      "get": {
+        "operationId": "layers.apps",
+        "summary": "List apps using layer",
+        "description": "List apps that reference this layer.\n\nThe `layer_position` indicates the index in each app's `layers` array.",
+        "tags": [
+          "layers"
+        ],
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Layer ID or slug. Slugs cannot contain underscores; IDs always do."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The pagination cursor"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The maximum number of items to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LayerAppRef"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/domains": {
+      "get": {
+        "operationId": "domains.list",
+        "summary": "List domains",
+        "description": "List domains registered to the authenticated organization.",
+        "tags": [
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The search query for filtering"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The pagination cursor"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            },
+            "allowEmptyValue": true,
+            "allowReserved": true,
+            "description": "The maximum number of items to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Domain"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "domains.create",
+        "summary": "Register a domain",
+        "description": "Register a hostname to the authenticated organization. Provide the bare hostname (e.g. `acme.com`) — never a `*.` wildcard literal — and use `kind` to control whether the apex, its wildcard subdomains, or both are served. Returns the verification token and the DNS records the user must publish.",
+        "tags": [
+          "domains"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DomainInit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Domain"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/domains/{domain}": {
+      "get": {
+        "operationId": "domains.get",
+        "summary": "Get domain",
+        "description": "Fetch a single domain by its id or name (e.g. `example.com`).",
+        "tags": [
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The domain ID or name (e.g. `example.com`). Domain IDs are UUIDs."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Domain"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "domains.delete",
+        "summary": "Delete a domain",
+        "description": "Permanently remove a domain and all associated bindings. Accepts the domain id or name.",
+        "tags": [
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The domain ID or name (e.g. `example.com`). Domain IDs are UUIDs."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v2/domains/{domain}/verify": {
+      "post": {
+        "operationId": "domains.verify",
+        "summary": "Verify domain ownership",
+        "description": "Re-run DNS-based ownership verification against the records the user published. Returns the refreshed domain. Accepts the domain id or name.",
+        "tags": [
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The domain ID or name (e.g. `example.com`). Domain IDs are UUIDs."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Domain"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/domains/{domain}/certificates": {
+      "post": {
+        "operationId": "domains.uploadCertificate",
+        "summary": "Upload a TLS certificate",
+        "description": "Upload a PEM-encoded certificate and private key. The server validates that the certificate covers the domain and that the key algorithm is RSA-2048 or EC P-256. Accepts the domain id or name.",
+        "tags": [
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The domain ID or name (e.g. `example.com`). Domain IDs are UUIDs."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "certificate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "PEM-encoded certificate (full chain)"
+                  },
+                  "private_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "PEM-encoded private key matching the certificate"
+                  }
+                },
+                "required": [
+                  "certificate",
+                  "private_key"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Domain"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "domains.listCertificates",
+        "summary": "List certificates",
+        "description": "Returns the current certificate set plus the latest provisioning attempt's status. Clients poll this endpoint to observe progress of an in-flight provisioning request. Accepts the domain id or name.",
+        "tags": [
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The domain ID or name (e.g. `example.com`). Domain IDs are UUIDs."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "certificates": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DomainCertificate"
+                      }
+                    },
+                    "provisioning_status": {
+                      "$ref": "#/components/schemas/ProvisioningStatus"
+                    }
+                  },
+                  "required": [
+                    "certificates",
+                    "provisioning_status"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/domains/{domain}/certificates/provision": {
+      "post": {
+        "operationId": "domains.provisionCertificate",
+        "summary": "Request automatic TLS provisioning",
+        "description": "Schedules an ACME-based certificate to be provisioned for the domain. Returns immediately with `202 Accepted`; poll `GET /domains/{domain}/certificates` for status. Accepts the domain id or name.",
+        "tags": [
+          "domains"
+        ],
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The domain ID or name (e.g. `example.com`). Domain IDs are UUIDs."
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accepted": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "accepted"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/database_instances": {
+      "post": {
+        "operationId": "databases.createInstance",
+        "summary": "Create database instance",
+        "description": "Create a new database instance owned by the organization. Supported engines: `postgresql` (bring-your-own server), `denokv` (Deno-managed key-value), and `prisma` (Prisma-managed Postgres).",
+        "tags": [
+          "databases"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatabaseInstanceInit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatabaseInstance"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

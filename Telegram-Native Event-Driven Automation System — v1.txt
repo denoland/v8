@@ -1,0 +1,1141 @@
+﻿Telegram-Native Event-Driven Automation System — v1.0
+Architecture, Implementation Path & Operational Source of Truth
+0. Purpose
+This document is the authoritative implementation path for the Telegram-native automation system.
+The system runs as a Cloudflare Worker and uses Telegram as its exclusive operational interface.
+The architecture enforces:
+Telegram-First
+Event-Driven
+Stateless Worker Execution
+Minimal Operational Persistence
+Centralized Telegram API Access
+Strict Feature Isolation
+Bounded Retries
+Explicit Consistency Rules
+Reproducible CI/CD
+
+
+Production execution is provided by Cloudflare Workers.
+Docker and GHCR are development and CI tooling only.
+________________
+
+
+1. Target Architecture
+1.1 Webhook Execution
+Telegram
+   ↓
+Cloudflare Worker
+   ↓
+Transport
+   ↓
+Authentication
+   ↓
+Authorization
+   ↓
+Rate Limiting
+   ↓
+Router
+   ↓
+Feature
+   ↓
+State / Telegram Client
+   ↓
+Result
+
+
+1.2 Scheduled Execution
+Cron Trigger
+   ↓
+scheduled()
+   ↓
+Scheduler
+   ↓
+Due Job Detection
+   ↓
+Job Validation
+   ↓
+Feature Execution
+   ↓
+State Update
+   ↓
+Telegram Client
+   ↓
+Telegram Bot API
+
+
+Cloudflare Cron Triggers invoke the Worker scheduled() handler and execute according to UTC schedules. Multiple cron expressions can be identified through the scheduled controller, including controller.cron.
+________________
+
+
+2. Implementation Order
+Implementation must proceed in the following order:
+01 Foundation
+02 Worker Runtime
+03 Configuration
+04 State Layer
+05 Telegram Client
+06 Security
+07 Transport
+08 Router
+09 Core Services
+10 Feature Modules
+11 Scheduler
+12 Reliability
+13 Testing
+14 Docker / GHCR
+15 CI/CD
+16 Deployment
+17 Production Readiness
+
+
+A later stage must not bypass an earlier architectural dependency.
+________________
+
+
+3. Stage 01 — Repository Foundation
+Required files:
+/
+├── src/
+├── tests/
+├── package.json
+├── tsconfig.json
+├── wrangler.jsonc
+├── Dockerfile
+├── .dev.vars.example
+├── .gitignore
+├── README.md
+└── ARCHITECTURE.md
+
+
+Tasks:
+* [ ] Initialize repository
+* [ ] Initialize TypeScript
+* [ ] Configure package manager
+* [ ] Create lockfile
+* [ ] Configure linting
+* [ ] Configure formatting
+* [ ] Configure unit testing
+* [ ] Create Worker entry point
+* [ ] Create environment example
+* [ ] Configure Wrangler
+* [ ] Create documentation
+Completion condition:
+Repository installs successfully
+TypeScript configuration is valid
+Test runner executes
+Lint configuration executes
+Wrangler configuration is valid
+No secrets are committed
+
+
+________________
+
+
+4. Stage 02 — Worker Runtime
+Implement:
+src/index.ts
+
+
+Required handlers:
+fetch()
+scheduled()
+
+
+Tasks:
+* [ ] Implement fetch()
+* [ ] Implement scheduled()
+* [ ] Configure compatibility settings
+* [ ] Configure bindings
+* [ ] Configure Cron Triggers
+* [ ] Validate Worker locally
+* [ ] Validate production build
+Runtime boundary:
+fetch()
+    → HTTP / Telegram events
+
+
+scheduled()
+    → Cron execution
+
+
+No feature logic belongs in either handler.
+Cloudflare defines scheduled() as the Worker handler for Cron Trigger events.
+________________
+
+
+5. Stage 03 — Configuration System
+Create a single configuration service.
+Responsibilities:
+* [ ] Environment variables
+* [ ] Owner identifier
+* [ ] Admin identifiers
+* [ ] Allowed chats
+* [ ] Feature flags
+* [ ] Language configuration
+* [ ] Rate-limit configuration
+* [ ] Scheduler configuration
+* [ ] Retry configuration
+Configuration must be validated before use.
+Critical invariant:
+Admin Configuration
+      ↓
+Validate
+      ↓
+Non-empty / Recoverable
+      ↓
+Authorization
+
+
+An empty or corrupted administrative configuration must never silently disable all administrative recovery.
+Required recovery rule:
+Owner
+  ↓
+Recovery Path
+  ↓
+Restore Admin Configuration
+
+
+________________
+
+
+6. Stage 04 — State Layer
+Create the only persistence interface available to features.
+Required operations:
+get()
+put()
+delete()
+
+
+State responsibilities:
+* [ ] Namespaced keys
+* [ ] Serialization
+* [ ] TTL / expiration
+* [ ] Key validation
+* [ ] Operational-data enforcement
+Allowed key families:
+config:*
+content:*
+ticket:*
+job:*
+workflow:*
+counter:*
+state:<chat>:<flow>
+
+
+Forbidden:
+Full Telegram message history
+Full member directory
+Telegram join-request archive
+Analytics warehouse
+ML dataset
+
+
+Consistency Rule
+Workers KV is eventually consistent and must not be treated as transactional storage.
+read → modify → write
+
+
+must not be assumed atomic.
+Cloudflare explicitly notes that KV is eventually consistent and is not ideal where atomic operations or transactional read/write behavior are required. Durable Objects should be used where stronger consistency is necessary.
+________________
+
+
+7. Stage 05 — Telegram Client
+Create the single Telegram Bot API gateway.
+Required methods:
+sendMessage
+editMessageText
+editMessageReplyMarkup
+answerCallbackQuery
+deleteMessage
+restrictChatMember
+approveChatJoinRequest
+declineChatJoinRequest
+sendPoll
+stopPoll
+
+
+Responsibilities:
+* [ ] Base API handling
+* [ ] Secure token loading
+* [ ] Timeout handling
+* [ ] Abort support
+* [ ] Error normalization
+* [ ] Response normalization
+* [ ] Sensitive-data protection
+Mandatory rule:
+Feature
+   ↓
+Telegram Client
+   ↓
+Telegram Bot API
+
+
+Forbidden:
+Feature
+   ↓
+Direct fetch()
+   ↓
+Telegram API
+
+
+________________
+
+
+8. Stage 06 — Security Layer
+Implement security before feature routing.
+Execution order:
+Authentication
+      ↓
+Authorization
+      ↓
+Rate Limiting
+      ↓
+Routing
+
+
+Tasks:
+* [ ] Webhook authentication
+* [ ] Owner validation
+* [ ] Admin validation
+* [ ] Allowed-chat validation
+* [ ] User permission validation
+* [ ] Chat permission validation
+* [ ] Feature permission validation
+* [ ] User rate limits
+* [ ] Chat rate limits
+* [ ] Sensitivity-based limits
+Security failures must terminate safely.
+________________
+
+
+9. Stage 07 — Transport Layer
+Transport is the HTTP ingress boundary.
+Tasks:
+* [ ] Accept webhook requests
+* [ ] Reject unsupported HTTP methods
+* [ ] Validate Content-Type
+* [ ] Parse payload
+* [ ] Validate webhook secret
+* [ ] Validate Telegram update structure
+* [ ] Pass validated update to security layer
+Required flow:
+HTTP Request
+    ↓
+Method Validation
+    ↓
+Header Validation
+    ↓
+Body Parsing
+    ↓
+Webhook Validation
+    ↓
+Update Validation
+    ↓
+Security Layer
+
+
+Forbidden:
+Transport
+   ↓
+Business Logic
+
+
+________________
+
+
+10. Stage 08 — Router
+The router performs dispatch only.
+Supported update types:
+message
+callback_query
+chat_join_request
+edited_message
+unknown
+
+
+Required behavior:
+Update
+  ↓
+Identify Type
+  ↓
+Select Handler
+  ↓
+Dispatch
+
+
+Forbidden:
+Router
+  ↓
+Business Logic
+
+
+The router must not directly modify KV or call Telegram APIs.
+________________
+
+
+11. Stage 09 — Core Application Services
+Before implementing feature modules, implement shared application services.
+Required services:
+Authorization Service
+Validation Service
+Notification Service
+State Service
+Telegram Client
+Error Service
+Scheduler Service
+
+
+This prevents duplicated infrastructure logic inside feature modules.
+________________
+
+
+12. Stage 10 — Feature Modules
+12.1 Current v1.0 Modules
+Panel
+Content
+Community
+Support
+
+
+12.2 Future Modules
+Buttons
+Automation
+Schedule
+Broadcast
+Approvals
+Knowledge
+Tasks
+Polls
+
+
+Future modules must not be represented as implemented until code, tests, and operational behavior exist.
+________________
+
+
+13. Stage 11 — Content Module
+Content responsibilities:
+Create
+Edit
+Store
+Schedule
+Publish
+
+
+All publication paths must converge on:
+Content.publish()
+
+
+Execution paths:
+Manual
+  ↓
+Content.publish()
+
+
+Scheduled
+  ↓
+Scheduler
+  ↓
+Content.publish()
+
+
+This guarantees that manual and scheduled publishing share the same delivery behavior.
+________________
+
+
+14. Stage 12 — Community Module
+Community functionality handles:
+chat_join_request
+
+
+Authorized operators receive:
+Approve
+Reject
+
+
+The implementation relies on Telegram's native pending-request state.
+No independent join-request archive is required.
+________________
+
+
+15. Stage 13 — Support Module
+Support provides ticket workflows.
+State:
+ticket:*
+
+
+Workflow:
+User Request
+    ↓
+Input Validation
+    ↓
+Ticket Creation
+    ↓
+Ticket State
+    ↓
+Resolution
+
+
+Invalid or empty input must not create malformed records.
+________________
+
+
+16. Stage 14 — Workflow State
+Temporary workflows may contain:
+workflow_id
+user_id
+chat_id
+current_step
+minimal_payload
+expires_at
+
+
+Requirements:
+* [ ] Automatic expiration
+* [ ] User scoping
+* [ ] Chat scoping
+* [ ] Resume support
+* [ ] Cross-user isolation
+* [ ] Minimal payload retention
+Example:
+state:<chat>:<flow>
+
+
+Workflow state must never become a substitute for message history.
+________________
+
+
+17. Stage 15 — Identifier Strategy
+Sequential identifiers may be required for:
+Ticket
+Task
+Content
+Poll
+Feature
+
+
+Every identifier class must explicitly declare its consistency model.
+Non-critical identifiers
+KV may be used when concurrent allocation does not require strict uniqueness.
+Concurrency-sensitive identifiers
+Use Durable Objects when allocation requires serialization or strict uniqueness.
+Concurrent Requests
+       ↓
+Durable Object
+       ↓
+Serialized Allocation
+       ↓
+Unique Identifier
+
+
+Cloudflare documents Durable Objects as stateful, strongly consistent coordination primitives, in contrast to KV's eventual consistency.
+Binding rule:
+Concurrency-sensitive ID
+    → Durable Object coordination
+
+
+A KV counter must not be described as atomic.
+________________
+
+
+18. Stage 16 — Scheduler
+The Cron Trigger is the wake-up mechanism.
+The scheduler is the application execution engine.
+Cron Trigger
+     ↓
+scheduled()
+     ↓
+Scheduler
+     ↓
+Find Due Jobs
+     ↓
+Validate
+     ↓
+Execute
+     ↓
+Retry if permitted
+     ↓
+Finalize
+     ↓
+Cleanup
+
+
+Job state:
+attempts
+max_retries
+status
+next_attempt
+last_error
+
+
+Cleanup:
+Expired Workflows
+Expired Temporary State
+Completed Jobs
+
+
+________________
+
+
+19. Stage 17 — Retry Policy
+Retry behavior is a system invariant.
+Required strategy:
+Exponential Backoff
++
+Bounded Jitter
++
+Maximum Attempts
++
+Error Classification
+
+
+Example:
+delay =
+min(max_delay, base_delay × 2^(attempt - 1))
++
+bounded_jitter
+
+
+Required configuration:
+base_delay
+max_delay
+max_retries
+jitter_range
+retryable_errors
+non_retryable_errors
+
+
+Forbidden:
+Infinite retries
+Fixed synchronized retry intervals
+Retrying permanent errors
+Unbounded backoff
+Undefined retry classification
+
+
+________________
+
+
+20. Stage 18 — Reliability Controls
+Multi-Admin Notifications
+Use failure isolation:
+Promise.allSettled([
+  notify(Admin A),
+  notify(Admin B),
+  notify(Admin C)
+])
+
+
+One failed notification must not abort the remaining notifications.
+Administrative Lockout Protection
+At startup and before privileged configuration changes:
+Load Admin Configuration
+       ↓
+Validate
+       ↓
+Require Valid Recovery Path
+       ↓
+Authorize
+
+
+Forbidden:
+Empty Admin List
+    +
+No Owner Recovery
+
+
+________________
+
+
+21. Stage 19 — Logging and Errors
+Logging
+Allowed:
+update type
+user/chat ID when necessary
+command
+callback action
+execution result
+timing
+error category
+
+
+Forbidden:
+Bot Token
+Webhook Secret
+API Credentials
+Full Sensitive Payload
+Sensitive Configuration
+
+
+Error Classes
+AuthenticationError
+AuthorizationError
+ValidationError
+RateLimitError
+TelegramApiError
+StateError
+WorkflowError
+SchedulerError
+InternalError
+
+
+Internal errors must be sanitized before reaching Telegram users.
+________________
+
+
+22. Stage 20 — Testing
+Unit
+Routing
+Authentication
+Authorization
+Validation
+Rate Limiting
+State
+Workflows
+Counters
+Scheduler
+Retry Logic
+Error Normalization
+
+
+Integration
+Webhook
+  ↓
+Security
+  ↓
+Router
+  ↓
+Feature
+
+
+Feature
+  ↓
+State
+
+
+Feature
+  ↓
+Telegram Client
+
+
+Cron
+  ↓
+scheduled()
+  ↓
+Scheduler
+  ↓
+Feature
+
+
+Negative
+Invalid Secret
+Malformed Update
+Unauthorized User
+Invalid Callback
+Expired Workflow
+KV Failure
+Telegram API Failure
+Retry Exhaustion
+Rate Limit Violation
+Empty Admin Configuration
+Concurrent ID Allocation
+
+
+________________
+
+
+23. Stage 21 — Docker / GHCR
+Docker is a development and CI environment.
+It is not the production Worker runtime.
+Preferred toolchain:
+GHCR Image
+      ↓
+Docker
+      ↓
+Node / Wrangler
+      ↓
+Dependencies
+      ↓
+Validation
+      ↓
+Tests
+      ↓
+Build
+
+
+Pinned image:
+ghcr.io/<configured-namespace>/wrangler:1.0.423
+
+
+The exact image reference must be defined by CI.
+Secrets must never be baked into the image.
+________________
+
+
+24. Stage 22 — Dockerfile
+FROM ghcr.io/<configured-namespace>/wrangler:1.0.423
+
+
+WORKDIR /app
+
+
+ENV NODE_ENV=development
+ENV CI=true
+
+
+COPY package*.json ./
+
+
+RUN npm ci
+
+
+COPY . .
+
+
+RUN npm run typecheck
+RUN npm test
+RUN npm run lint
+
+
+CMD ["npm", "run", "dev"]
+
+
+Required secret rule:
+TELEGRAM_BOT_TOKEN
+WEBHOOK_SECRET
+OWNER_TELEGRAM_ID
+
+
+must not exist in the image filesystem or Dockerfile.
+If the pinned GHCR image does not contain the required Node/npm toolchain, use an appropriate Node base image and install the required Wrangler version explicitly.
+________________
+
+
+25. Stage 23 — Local Development
+Canonical:
+npx wrangler dev
+
+
+Docker:
+docker build -t telegram-worker-dev .
+
+
+docker run --rm -it \
+  --env-file .dev.vars \
+  -p 8787:8787 \
+  telegram-worker-dev
+
+
+Scheduled execution can be tested locally through the scheduled-event endpoint supported by Wrangler/Workers.
+________________
+
+
+26. Stage 24 — GitHub Actions CI/CD
+Because the repository uses GitHub, GitHub Actions is the authoritative CI system.
+Pipeline:
+validate
+   ↓
+test
+   ↓
+build
+   ↓
+deploy
+   ↓
+smoke-test
+
+
+GitHub Actions supports explicit job dependencies through needs, container-based jobs, and environment-scoped secrets.
+Required controls:
+* [ ] Pull requests run validation and tests
+* [ ] Main branch runs the deployment pipeline
+* [ ] Failed validation blocks tests/build
+* [ ] Failed tests block build/deployment
+* [ ] Failed build blocks deployment
+* [ ] Production deployment uses a protected environment
+* [ ] Production secrets are environment-scoped
+* [ ] Smoke test runs after deployment
+* [ ] No credentials are printed
+* [ ] CI uses the pinned toolchain
+________________
+
+
+27. Stage 25 — Deployment
+Production flow:
+GitHub
+   ↓
+GitHub Actions
+   ↓
+Docker / GHCR Toolchain
+   ↓
+Validate
+   ↓
+Test
+   ↓
+Build
+   ↓
+Wrangler
+   ↓
+Cloudflare Worker
+   ├── fetch()
+   └── scheduled()
+
+
+Cloudflare resources:
+Worker
+KV
+Cron Triggers
+Webhook
+Secrets
+
+
+Docker terminates at the CI/toolchain boundary.
+It does not become the production runtime.
+________________
+
+
+28. Stage 26 — Webhook Registration
+Deployment sequence:
+Deploy Worker
+     ↓
+Configure Secret
+     ↓
+Register Webhook
+     ↓
+Verify Webhook
+     ↓
+Send Test Update
+     ↓
+Verify Processing
+
+
+Verification must confirm:
+Webhook URL
+Webhook Secret
+Allowed Update Types
+Worker Response
+
+
+________________
+
+
+29. Stage 27 — Production Gate
+Production must not be considered ready until every required control passes.
+[ ] Worker deployed
+[ ] KV bindings configured
+[ ] Cron Triggers configured
+[ ] scheduled() implemented
+[ ] Webhook registered
+[ ] Webhook secret configured
+[ ] Authentication enforced
+[ ] Authorization enforced
+[ ] Admin recovery path verified
+[ ] Rate limiting enabled
+[ ] Telegram Client centralized
+[ ] Features cannot call Telegram directly
+[ ] Features cannot access raw KV
+[ ] Retry backoff implemented
+[ ] Retry jitter bounded
+[ ] Retry classification implemented
+[ ] Concurrency-sensitive IDs use proper coordination
+[ ] Unit tests passing
+[ ] Integration tests passing
+[ ] Negative tests passing
+[ ] Smoke tests passing
+[ ] Secrets secured
+[ ] Rollback procedure documented
+[ ] Logging reviewed
+[ ] Implementation status verified
+
+
+________________
+
+
+30. v1.0 Implementation Status
+Completed
+Webhook processing
+Update routing
+Join-request moderation
+Owner/Admin authorization
+Callback validation
+Support ticket creation
+Scheduled publication
+Cron-based scheduling
+Retry handling
+Temporary state cleanup
+Fault-tolerant notifications
+Minimal KV persistence
+
+
+In Progress / Stubbed
+Content creation UX
+Content listing
+Content editing
+Content archive management
+Support ticket listing
+Ticket resolution workflows
+Advanced administration
+
+
+No architectural target may be reported as implemented until code, tests, and operational behavior are present.
+________________
+
+
+31. Source-of-Truth Rules
+Required
+Webhook
+→ Transport validation only
+
+
+Security
+→ Authentication
+→ Authorization
+→ Rate limiting
+
+
+Router
+→ Dispatch only
+
+
+Features
+→ Business logic only
+
+
+State Layer
+→ Operational persistence only
+
+
+Telegram Client
+→ All Telegram API access
+
+
+Scheduler
+→ Job lifecycle
+
+
+Docker / GHCR
+→ Development and CI only
+
+
+Cloudflare Worker
+→ Production runtime
+
+
+Mandatory Safety Rules
+Admin configuration
+→ Validated
+→ Recoverable
+→ Never silently empty
+
+
+Retry system
+→ Exponential backoff
+→ Bounded jitter
+→ Maximum retries
+→ Error classification
+
+
+Concurrency-sensitive IDs
+→ Explicit consistency strategy
+→ Durable Object coordination when strict serialization is required
+
+
+Forbidden
+Business logic in webhook
+Business logic in router
+Direct Telegram API calls from features
+Raw KV access from features
+Persistent Telegram message-history storage
+Secrets in source control
+Secrets in Docker images
+Assuming KV atomicity
+Unbounded retries
+Fixed synchronized retry intervals
+Unguarded empty admin configuration
+Using Docker as production Worker runtime
+
+
+________________
+
+
+32. Definition of Done
+The architecture is considered complete when:
+* [ ] All required layers exist
+* [ ] Layer boundaries are enforced in code
+* [ ] Telegram API access is centralized
+* [ ] Features use service contracts
+* [ ] KV is restricted to operational state
+* [ ] KV consistency limitations are respected
+* [ ] Concurrency-sensitive identifiers have an explicit strategy
+* [ ] Administrative lockout protection is implemented
+* [ ] Retry policy is bounded and tested
+* [ ] Scheduled execution uses scheduled()
+* [ ] Scheduler lifecycle is deterministic
+* [ ] Docker/GHCR provides reproducible tooling
+* [ ] GitHub Actions enforces CI/CD gates
+* [ ] Production secrets are externally managed
+* [ ] Unit, integration, and negative tests pass
+* [ ] Deployment and rollback procedures are documented
+* [ ] Production readiness checklist passes
+* [ ] Repository status matches the documented v1.0 implementation
+________________
+
+
+33. Final System Path
+Runtime
+                   TELEGRAM
+                        │
+                        ▼
+                Cloudflare Worker
+                        │
+                        ▼
+                   Transport
+                        │
+                        ▼
+                    Security
+                        │
+                        ▼
+                     Router
+                        │
+                        ▼
+                 Feature Module
+                  ┌─────┴─────┐
+                  ▼           ▼
+             State Service  Telegram Client
+                  │           │
+                  ▼           ▼
+             Cloudflare KV  Telegram API
+
+
+Scheduler
+Cron Trigger
+     ↓
+scheduled()
+     ↓
+Scheduler
+     ↓
+Job
+     ↓
+Feature
+     ↓
+State / Telegram Client
+
+
+Engineering
+GitHub
+   ↓
+GitHub Actions
+   ↓
+GHCR / Docker
+   ↓
+Validate
+   ↓
+Test
+   ↓
+Build
+   ↓
+Wrangler
+   ↓
+Cloudflare Worker
+
+
+This is the authoritative implementation path for v1.0.
