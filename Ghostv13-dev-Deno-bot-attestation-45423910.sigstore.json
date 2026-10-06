@@ -1,4 +1,4 @@
-{
+  {
   "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
   "verificationMaterial": {
     "timestampVerificationData": {
