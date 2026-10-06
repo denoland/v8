@@ -1,4 +1,4 @@
-﻿Telegram-Native Event-Driven Automation System — v1.0
+  ﻿Telegram-Native Event-Driven Automation System — v1.0
 Architecture, Implementation Path & Operational Source of Truth
 0. Purpose
 This document is the authoritative implementation path for the Telegram-native automation system.
