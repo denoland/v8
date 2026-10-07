@@ -25,3 +25,10 @@ For submitting patches to this repo, please contact the maintainers
 [on Discord][discord] in the `#dev-rusty_v8` channel.
 
 [discord]: https://discord.gg/deno
+
+## License
+
+The patches and scripts in this repository are licensed under the BSD
+3-Clause license in [LICENSE](LICENSE), the same license as V8. The
+`*-lkgr-denoland` branches contain V8 itself, with these patches applied,
+under V8's own LICENSE.
