@@ -1,8 +1,3 @@
-The patches and scripts in this repository are licensed under the BSD
-3-Clause license below, the same license as V8
-(https://chromium.googlesource.com/v8/v8). The *-lkgr-denoland branches
-contain V8 itself, with these patches applied, under V8's own LICENSE.
-
 Copyright the Deno authors.
 
 Redistribution and use in source and binary forms, with or without
