@@ -2876,7 +2876,7 @@ uint16_t Simulator::F16FmaHelper(Float16 a, Float16 b, Float16 c) {
 }
 
 namespace {
-inline Float16 NegateF16(Float16 value) {
+[[maybe_unused]] inline Float16 NegateF16(Float16 value) {
   return Float16::FromBits(static_cast<uint16_t>(value.get_bits() ^ 0x8000));
 }
 }  // namespace
