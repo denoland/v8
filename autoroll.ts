@@ -5,17 +5,27 @@ const V8_VERSIONS = [
   "15.8",
 ];
 
-// Patches that only apply up to a given V8 version. Upstream removed
-// Atomics.Mutex and Atomics.Condition in 15.8, so the padding patch has
-// nothing left to fix there.
-const PATCH_MAX_VERSION: Record<string, string> = {
-  "0001-add-padding-to-fix-ptrcmp-builds-on-windows.patch": "15.2",
+// Patches that only apply to some V8 versions, as an inclusive range.
+// - Upstream removed Atomics.Mutex and Atomics.Condition in 15.8, so the
+//   padding patch has nothing left to fix there.
+// - NegateF16 only exists in the riscv simulator since 15.8.
+const PATCH_VERSIONS: Record<string, { min?: string; max?: string }> = {
+  "0001-add-padding-to-fix-ptrcmp-builds-on-windows.patch": { max: "15.2" },
+  "0004-riscv-Mark-NegateF16-maybe_unused.patch": { min: "15.8" },
 };
 
-function versionAtMost(version: string, max: string) {
-  const [a, b] = version.split(".").map(Number);
-  const [c, d] = max.split(".").map(Number);
-  return a < c || (a === c && b <= d);
+function compareVersions(a: string, b: string) {
+  const [a1, a2] = a.split(".").map(Number);
+  const [b1, b2] = b.split(".").map(Number);
+  return a1 - b1 || a2 - b2;
+}
+
+function patchApplies(name: string, version: string) {
+  const range = PATCH_VERSIONS[name];
+  if (!range) return true;
+  if (range.min && compareVersions(version, range.min) < 0) return false;
+  if (range.max && compareVersions(version, range.max) > 0) return false;
+  return true;
 }
 
 const checkVersions = !!Deno.env.get("CHECK_V8_VERSIONS");
@@ -145,10 +155,7 @@ for (const version of V8_VERSIONS) {
   }
   // Get list of all patches in the ../patches directory.
   const patches = [...Deno.readDirSync("./patches")]
-    .filter((x) =>
-      !(x.name in PATCH_MAX_VERSION) ||
-      versionAtMost(version, PATCH_MAX_VERSION[x.name])
-    )
+    .filter((x) => patchApplies(x.name, version))
     .map((x) => `../patches/${x.name}`);
 
   patches.sort();

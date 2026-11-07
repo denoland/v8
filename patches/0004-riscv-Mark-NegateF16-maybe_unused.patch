@@ -1,0 +1,28 @@
+From 952a1484d32cf46f0f408a284e1ee5e86c752293 Mon Sep 17 00:00:00 2001
+From: Divy Srivastava <divy@cloudflare.com>
+Date: Sat, 7 Nov 2026 13:23:53 +0530
+Subject: [PATCH] [riscv] Mark NegateF16 [[maybe_unused]]
+
+NegateF16 is defined unconditionally but only used inside
+CAN_USE_RVV_INSTRUCTIONS, so builds without RVV fail with
+-Werror,-Wunused-function.
+---
+ src/execution/riscv/simulator-riscv.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/execution/riscv/simulator-riscv.cc b/src/execution/riscv/simulator-riscv.cc
+index 25af74faad2..1f9f342cd7a 100644
+--- a/src/execution/riscv/simulator-riscv.cc
++++ b/src/execution/riscv/simulator-riscv.cc
+@@ -2876,7 +2876,7 @@ uint16_t Simulator::F16FmaHelper(Float16 a, Float16 b, Float16 c) {
+ }
+ 
+ namespace {
+-inline Float16 NegateF16(Float16 value) {
++[[maybe_unused]] inline Float16 NegateF16(Float16 value) {
+   return Float16::FromBits(static_cast<uint16_t>(value.get_bits() ^ 0x8000));
+ }
+ }  // namespace
+-- 
+2.54.0 (Apple Git-157)
+
