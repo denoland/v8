@@ -2,7 +2,21 @@ const V8_VERSIONS = [
   "14.9",
   "15.0",
   "15.2",
+  "15.8",
 ];
+
+// Patches that only apply up to a given V8 version. Upstream removed
+// Atomics.Mutex and Atomics.Condition in 15.8, so the padding patch has
+// nothing left to fix there.
+const PATCH_MAX_VERSION: Record<string, string> = {
+  "0001-add-padding-to-fix-ptrcmp-builds-on-windows.patch": "15.2",
+};
+
+function versionAtMost(version: string, max: string) {
+  const [a, b] = version.split(".").map(Number);
+  const [c, d] = max.split(".").map(Number);
+  return a < c || (a === c && b <= d);
+}
 
 const checkVersions = !!Deno.env.get("CHECK_V8_VERSIONS");
 
@@ -131,6 +145,10 @@ for (const version of V8_VERSIONS) {
   }
   // Get list of all patches in the ../patches directory.
   const patches = [...Deno.readDirSync("./patches")]
+    .filter((x) =>
+      !(x.name in PATCH_MAX_VERSION) ||
+      versionAtMost(version, PATCH_MAX_VERSION[x.name])
+    )
     .map((x) => `../patches/${x.name}`);
 
   patches.sort();
